@@ -3,6 +3,10 @@ node_modules/
 
 # npm
 package-lock.json
+*.tgz
+
+# agent workspace (local tooling state, not project content)
+.workbuddy/
 
 # build / test artifacts
 dist/
