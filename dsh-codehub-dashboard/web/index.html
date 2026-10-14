@@ -313,8 +313,11 @@ function route(){ const {view,p}=currentHash(); state.view=["overview","mrs","re
 async function boot(){ try{ state.boot=await api("boot"); state.overview= state.boot.hasData ? (await api("overview")).overview : null; }
   catch(e){ toast("加载失败: "+e.message,4000); } route(); startAutoRefresh(); }
 async function loadOverview(force){ const j=force?await api("refresh"):await api("overview"); state.overview=j.overview; state.boot&&(state.boot.hasData=true); }
-async function loadMrs(){ const f=state.mrFilters; const j=await api("mrs",{repoKey:f.repoKey,state:f.state,q:f.q,needsReview:f.needsReview?"1":"",unresolved:f.unresolved?"1":"",sort:f.sort,limit:200}); state.mrData=j; }
-async function loadReviews(){ const f=state.rvFilters; const j=await api("reviews",{repoKey:f.repoKey,unresolved:f.unresolved?"1":"",needsReply:f.needsReply?"1":"",q:f.q,limit:300}); state.rvData=j; }
+// Sequence guards: a stale in-flight response must never overwrite a newer
+// one when the user flips filters faster than the API answers.
+let mrSeq=0, rvSeq=0;
+async function loadMrs(){ const f=state.mrFilters; const seq=++mrSeq; const j=await api("mrs",{repoKey:f.repoKey,state:f.state,q:f.q,needsReview:f.needsReview?"1":"",unresolved:f.unresolved?"1":"",ci:f.ci,sort:f.sort,limit:200}); if(seq===mrSeq) state.mrData=j; }
+async function loadReviews(){ const f=state.rvFilters; const seq=++rvSeq; const j=await api("reviews",{repoKey:f.repoKey,unresolved:f.unresolved?"1":"",needsReply:f.needsReply?"1":"",q:f.q,limit:300}); if(seq===rvSeq) state.rvData=j; }
 function startAutoRefresh(){ setInterval(async ()=>{ if(document.visibilityState!=="visible"||state.busy) return;
     if(state.view==="settings") return; try{ await loadOverview(false); render(); }catch{} }, 60000); }
 
@@ -415,8 +418,7 @@ function viewMrs(){ const ov=state.overview; if(!ov) return emptyState();
   const f=state.mrFilters; const data=state.mrData;
   const repoOpts=ov.repos.map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("");
   let rows=data?data.mrs:[];
-  if(f.ci) rows=rows.filter(m=>m.ciState===f.ci);
-  const body=rows.length?rows.map(mrRow).join(""):`<div class="empty">没有符合条件的 MR</div>`;
+  const body=data?(rows.length?rows.map(mrRow).join(""):`<div class="empty">没有符合条件的 MR</div>`):`<div class="empty">加载中…</div>`;
   return `<div class="wrap">
   <div class="toolbar">
     <select id="fRepo"><option value="">全部仓库</option>${repoOpts}</select>
@@ -452,13 +454,13 @@ function viewReviews(){ const ov=state.overview; if(!ov) return emptyState();
   let groups="";
   if(data&&data.comments.length){
     const byMr=new Map();
-    for(const c of data.comments){ const k=c.repoKey+"|"+c.mrNumber; if(!byMr.has(k)) byMr.set(k,{c,mrs:[]}); byMr.get(k).mrs.push(c); }
-    for(const {c,mrs} of byMr.values()){
-      groups+=`<div class="card group"><div class="ghd" data-mr="${esc(c.repoKey)}|${c.mrNumber}">
-        ${stateChip(c)}<span class="repo-tag">${esc(c.repoPath||c.repoName)}</span>
-        <span class="title">#${c.mrNumber} ${esc(c.mrTitle)}</span>
-        <span class="count-pill">${mrs.length} 条意见</span>${mrs.some(x=>x.needsReply)?chip("reply","需我回复"):""}</div>
-        ${mrs.map(cmtRow).join("")}</div>`;
+    for(const c of data.comments){ const k=c.repoKey+"|"+c.mrNumber; if(!byMr.has(k)) byMr.set(k,{first:c,list:[]}); byMr.get(k).list.push(c); }
+    for(const {first,list} of byMr.values()){
+      groups+=`<div class="card group"><div class="ghd" data-mr="${esc(first.repoKey)}|${first.mrNumber}">
+        ${chip(first.mrState||"none",STATE_CH[first.mrState]||first.mrState||"—")}<span class="repo-tag">${esc(first.repoPath||first.repoName)}</span>
+        <span class="title">#${first.mrNumber} ${esc(first.mrTitle)}</span>
+        <span class="count-pill">${list.length} 条意见</span>${list.some(x=>x.needsReply)?chip("reply","需我回复"):""}</div>
+        ${list.map(cmtRow).join("")}</div>`;
     }
   } else groups=`<div class="card"><div class="empty">${f.unresolved||f.needsReply?"🎉 没有符合条件的检视意见":"暂无检视意见"}</div></div>`;
   return `<div class="wrap">
@@ -509,11 +511,11 @@ function repoCard(r){ const c=r.counts; const tot=Math.max(1,c.open+c.merged+c.c
 /* ---------- settings ---------- */
 function draft(){ if(!state.configDraft&&state.boot) state.configDraft=JSON.parse(JSON.stringify(state.boot.config)); return state.configDraft; }
 function viewSettings(){ const cfg=draft(); if(!cfg) return `<div class="wrap"><div class="empty">加载中…</div></div>`;
-  const provDesc={auto:"自动：优先 gh CLI → HTTP API（如配置了 token）",gh:"gh CLI：使用 GitHub 官方命令行工具拉取真实 PR / Review / Comment 数据（需 gh auth login 或 GH_TOKEN）",http:"REST API：直接调用 GitHub REST API v3（需在「实例」中配置 Personal Access Token）","git-meta":"Git 元信息：仅从本地 git 仓库读取默认分支等元数据，不拉取 MR（需配合 gh 或 HTTP 使用）"};
+  const provDesc={auto:"自动：优先 gh CLI → HTTP API（如配置了 token）",gh:"gh CLI：使用 GitHub 官方命令行工具拉取真实 PR / Review / Comment 数据（需 gh auth login 或 GH_TOKEN）",http:"REST API：直接调用 GitHub REST API v3（需在「实例」中配置 Personal Access Token）",git:"Git 元信息：仅从本地 git 仓库读取默认分支等元数据，不拉取 MR（需配合 gh 或 HTTP 使用）"};
   return `<div class="wrap"><div class="setform">
   <div class="card sectcard"><div class="hd">数据源与身份</div><div class="bd">
     <div class="row2">
-      <div class="fld"><label>数据源（provider）</label><select id="cfgProvider">${["auto","gh","http","git-meta"].map(p=>`<option value="${p}"${cfg.provider===p?" selected":""}>${p}</option>`).join("")}</select>
+      <div class="fld"><label>数据源（provider）</label><select id="cfgProvider">${["auto","gh","http","git"].map(p=>`<option value="${p}"${cfg.provider===p?" selected":""}>${p}</option>`).join("")}</select>
         <div class="hint" id="provHint">${esc(provDesc[cfg.provider]||"")}</div></div>
       <div class="fld"><label>轮询间隔（分钟）</label><input type="number" id="cfgPoll" min="1" max="1440" value="${cfg.pollMinutes}"/>
         <div class="hint">后台自动刷新周期；页面上也可手动刷新</div></div>
@@ -529,7 +531,7 @@ function viewSettings(){ const cfg=draft(); if(!cfg) return `<div class="wrap"><
     ${cfg.instances.length?cfg.instances.map((inst,i)=>instRow(inst,i)).join(""):`<div class="muted" style="font-size:12.5px">未配置实例。gh CLI 模式下无需配置（使用 gh auth login 的凭据）；HTTP API 模式需添加实例并填入 Personal Access Token。</div>`}
   </div></div>
 
-  <div class="card sectcard"><div class="hd">仓库 <span style="display:flex;gap:6px"><button class="btn sm" id="discoverBtn" ${CWD?"":"disabled title=未获得工作区路径"}>🔍 从工作区发现</button><button class="btn sm" id="addRepo">＋ 手动添加</button></span></div><div class="bd">
+  <div class="card sectcard"><div class="hd">仓库 <span style="display:flex;gap:6px"><button class="btn sm" id="discoverBtn" ${CWD?"":"disabled title=\"未获得工作区路径\""}>🔍 从工作区发现</button><button class="btn sm" id="addRepo">＋ 手动添加</button></span></div><div class="bd">
     <div id="repoList">${cfg.repos.length?cfg.repos.map((r,i)=>repoRow(r,i,cfg)).join(""):`<div class="muted" style="font-size:12.5px">请添加 GitHub 仓库（owner/name 格式），或使用「从工作区发现」自动扫描本地 Git 仓库。</div>`}</div>
     <div id="discoverBox">${state.discover?discoverBox():""}</div>
   </div></div>
@@ -593,7 +595,7 @@ async function openMr(repoKey,number){ $("#drawer").classList.add("open"); $("#b
       <span class="k">分支</span><span class="branch">${esc(m.sourceBranch)} → ${esc(m.targetBranch)}</span>
       <span class="k">创建 / 更新</span><span title="${esc(absTime(m.createdAt))}">${relTime(m.createdAt)}</span> / <span title="${esc(absTime(m.updatedAt))}">${relTime(m.updatedAt)}</span>
       ${m.mergedAt?`<span class="k">合并时间</span><span title="${esc(absTime(m.mergedAt))}">${relTime(m.mergedAt)}</span>`:""}
-      <span class="k">变更规模</span><span><span class="adds">+${fmtNum(m.additions)}</span> <span class="dels">-${fmtNum(m.deletions)}</span> · ${m.changedFiles} 个文件${m.commits?` · ${m.commits} 次提交`:""}</span>
+      <span class="k">变更规模</span><span><span class="adds">+${fmtNum(m.additions)}</span> <span class="dels">-${fmtNum(m.deletions)}</span> · ${m.changedFiles} 个文件</span>
       <span class="k">请求评审</span><span>${(m.requestedReviewers||[]).map(l=>`<span class="chip label">@${esc(l)}</span>`).join(" ")||"—"}</span>
     </div>
     <div class="sect">评审（${(m.reviews||[]).length}）</div>
@@ -613,6 +615,10 @@ function closeDrawer(){ $("#drawer").classList.remove("open"); $("#backdrop").cl
 /* ================= render ================= */
 const VIEWS=[["overview","📊 概览"],["mrs","🔀 MR"],["reviews","💬 检视意见"],["repos","📚 仓库"],["settings","⚙️ 设置"]];
 function render(){
+  // Remember focus so a full innerHTML rebuild (e.g. debounced search) does
+  // not steal it from the input the user is typing in.
+  const ae=document.activeElement;
+  const focusInfo=(ae&&ae.id)?{id:ae.id,start:ae.selectionStart,end:ae.selectionEnd}:null;
   $("#nav").innerHTML=VIEWS.map(([v,l])=>`<button data-nav="${v}" class="${state.view===v?"active":""}">${l}</button>`).join("");
   const ov=state.overview; const s=ov?.summary;
   $("#srcbadge").textContent=!ov?"…":s.errors>0?`${s.repos-s.errors} 正常 / ${s.errors} 出错`:`实时数据（${s.repos} 仓库）`;
@@ -623,9 +629,9 @@ function render(){
     : state.view==="reviews"?viewReviews()
     : state.view==="repos"?viewRepos()
     : viewSettings();
-  if(state.view==="mrs"&&!state.mrData) refreshMrs();
-  if(state.view==="reviews"&&!state.rvData) refreshReviews();
   const bc=$("#bannerClose"); if(bc) bc.onclick=(e)=>{e.stopPropagation();state.bannerClosed=true;render();};
+  if(focusInfo){ const el=document.getElementById(focusInfo.id);
+    if(el){ try{ el.focus(); if(el.setSelectionRange&&focusInfo.start!=null) el.setSelectionRange(focusInfo.start,focusInfo.end); }catch{} } }
 }
 async function withBusy(fn){ state.busy=true; $("#refreshIco").classList.add("spin");
   try{ await fn(); }catch(e){ toast("出错了："+e.message,4000); }
@@ -658,17 +664,6 @@ document.addEventListener("change",(e)=>{
   if(t.dataset&&t.dataset.inst!==undefined){ draft().instances[Number(t.dataset.inst)][t.dataset.k]=t.value; return; }
   if(t.dataset&&t.dataset.repo!==undefined){ const r=draft().repos[Number(t.dataset.repo)];
     r[t.dataset.k]=t.dataset.k==="enabled"?t.checked:t.value; return; }
-  const c=draft(); if(!c||state.view!=="settings") return;
-  if(t.id==="cfgProvider"){ c.provider=t.value; $("#provHint")&&render(); }
-  else if(t.id==="cfgPoll") c.pollMinutes=Number(t.value)||10;
-  else if(t.id==="cfgMeName") c.me.name=t.value;
-  else if(t.id==="cfgMeLogin") c.me.login=t.value;
-  else if(t.id==="cfgGhPath") c.ghPath=t.value;
-});
-document.addEventListener("input",(e)=>{ const t=e.target;
-  if(t.id==="fQ"){ state.mrFilters.q=t.value; debounce(()=>nav("mrs",flatMrFilters()),350); }
-  if(t.id==="rQ"){ state.rvFilters.q=t.value; debounce(()=>nav("reviews",flatRvFilters()),350); } });
-document.addEventListener("change",(e)=>{ const t=e.target;
   if(t.id==="fRepo"){ state.mrFilters.repoKey=t.value; nav("mrs",flatMrFilters()); }
   else if(t.id==="fState"){ state.mrFilters.state=t.value; nav("mrs",flatMrFilters()); }
   else if(t.id==="fSort"){ state.mrFilters.sort=t.value; refreshMrs(); }
@@ -676,7 +671,17 @@ document.addEventListener("change",(e)=>{ const t=e.target;
   else if(t.id==="fUnres"){ state.mrFilters.unresolved=t.checked; nav("mrs",flatMrFilters()); }
   else if(t.id==="rRepo"){ state.rvFilters.repoKey=t.value; nav("reviews",flatRvFilters()); }
   else if(t.id==="rUnres"){ state.rvFilters.unresolved=t.checked; nav("reviews",flatRvFilters()); }
-  else if(t.id==="rReply"){ state.rvFilters.needsReply=t.checked; nav("reviews",flatRvFilters()); } });
+  else if(t.id==="rReply"){ state.rvFilters.needsReply=t.checked; nav("reviews",flatRvFilters()); }
+  else if(state.view==="settings"){ const c=draft(); if(!c) return;
+    if(t.id==="cfgProvider"){ c.provider=t.value; render(); }
+    else if(t.id==="cfgPoll") c.pollMinutes=Number(t.value)||10;
+    else if(t.id==="cfgMeName") c.me.name=t.value;
+    else if(t.id==="cfgMeLogin") c.me.login=t.value;
+    else if(t.id==="cfgGhPath") c.ghPath=t.value; }
+});
+document.addEventListener("input",(e)=>{ const t=e.target;
+  if(t.id==="fQ"){ state.mrFilters.q=t.value; debounce(()=>nav("mrs",flatMrFilters()),350); }
+  if(t.id==="rQ"){ state.rvFilters.q=t.value; debounce(()=>nav("reviews",flatRvFilters()),350); } });
 const flatMrFilters=()=>{const f=state.mrFilters;return {repoKey:f.repoKey,state:f.state==="all"?"":f.state,q:f.q,needsReview:f.needsReview?"1":"",unresolved:f.unresolved?"1":"",ci:f.ci};};
 const flatRvFilters=()=>{const f=state.rvFilters;return {repoKey:f.repoKey,unresolved:f.unresolved?"1":"",needsReply:f.needsReply?"1":"",q:f.q};};
 let _dbt=null; const debounce=(fn,ms)=>{clearTimeout(_dbt);_dbt=setTimeout(fn,ms);};

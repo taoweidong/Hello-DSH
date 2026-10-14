@@ -19,7 +19,7 @@
 // are never echoed back by the API (masked as ****last4).
 
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, rename, writeFile, chmod, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -105,8 +105,11 @@ function createConfigStore(filePath, log) {
     out.http = { ...base.http, ...(cfg?.http ?? {}) }
     out.instances = Array.isArray(cfg?.instances) ? cfg.instances : []
     out.repos = Array.isArray(cfg?.repos) ? cfg.repos : []
-    out.pollMinutes = Math.max(1, Math.min(1440, Number(out.pollMinutes) || base.pollMinutes))
-    if (!['auto', 'gh', 'git', 'http'].includes(out.provider)) out.provider = 'auto'
+      out.pollMinutes = Math.max(1, Math.min(1440, Number(out.pollMinutes) || base.pollMinutes))
+      // "git-meta" was the pre-0.1.1 UI value; map it so hand-edited or
+      // legacy configs keep working instead of silently falling back to auto.
+      if (out.provider === 'git-meta') out.provider = 'git'
+      if (!['auto', 'gh', 'git', 'http'].includes(out.provider)) out.provider = 'auto'
     let n = 0; for (const inst of out.instances) if (!inst.id) inst.id = `i${++n}`
     n = 0; for (const repo of out.repos) if (!repo.id) repo.id = `r${++n}`
     return out
@@ -190,7 +193,12 @@ const GH_PR_VIEW_FIELDS = [
   'author{login,name}','labels{name}','reviewRequests{login}',
   'reviews{author{login,name},state,submittedAt,body}',
   'comments{author{login,name},body,path,line,createdAt}',
+  'statusCheckRollup',
 ].join(',')
+// Same fields without statusCheckRollup, used as fallback when the installed
+// gh predates that JSON field (unknown-field error would otherwise fail the
+// whole `gh pr view` call and lose reviews/comments too).
+const GH_PR_VIEW_FIELDS_NO_CI = GH_PR_VIEW_FIELDS.split(',').filter((f) => f !== 'statusCheckRollup').join(',')
 
 function ghPerson(o) {
   if (!o) return { name: 'unknown', login: 'unknown' }
@@ -266,12 +274,21 @@ async function ghSnapshot(repo, cfg) {
 
   await mapLimit(detailed, FETCH_CONCURRENCY, async (mr) => {
     try {
-      const viewRes = await run(exe, [
+      let viewRes = await run(exe, [
         'pr', 'view', String(mr.number), '--repo', repo.path,
         '--json', GH_PR_VIEW_FIELDS,
       ], { env })
+      // Older gh builds reject statusCheckRollup as an unknown field; retry
+      // without it rather than losing reviews and comments entirely.
+      if (viewRes.code !== 0 && /unknown (json )?field/i.test(viewRes.stderr || '')) {
+        viewRes = await run(exe, [
+          'pr', 'view', String(mr.number), '--repo', repo.path,
+          '--json', GH_PR_VIEW_FIELDS_NO_CI,
+        ], { env })
+      }
       if (viewRes.code !== 0) return
-      const detail = JSON.parse(viewRes.stdout)
+      let detail
+      try { detail = JSON.parse(viewRes.stdout) } catch { return }
       // Merge richer reviews
       if (Array.isArray(detail.reviews) && detail.reviews.length) {
         mr.reviews = detail.reviews.map((r) => ({
@@ -285,13 +302,10 @@ async function ghSnapshot(repo, cfg) {
       }
       // Inline review comments (these are PR review comments, not issue comments)
       if (Array.isArray(detail.comments) && detail.comments.length) {
-        const existingIds = new Set(mr.comments.map((c) => c.id))
         for (let i = 0; i < detail.comments.length; i++) {
           const c = detail.comments[i]
-          const id = `rc-${mr.number}-v-${i}`
-          if (existingIds.has(id)) continue
           mr.comments.push({
-            id, author: ghPerson(c.author), body: String(c.body ?? ''),
+            id: `rc-${mr.number}-v-${i}`, author: ghPerson(c.author), body: String(c.body ?? ''),
             file: c.path ?? null, line: c.line != null ? Number(c.line) : null,
             createdAt: isoOr(c.createdAt, mr.updatedAt), resolved: false,
           })
@@ -547,7 +561,7 @@ function createFetcher(store, log) {
     return out
   }
 
-  return { refreshAll, cached, fetchOne, ghAvailable, ghProbe, invalidate: () => cache.clear() }
+  return { refreshAll, cached, fetchOne, ghAvailable, ghProbe, invalidate: () => { cache.clear(); ghOkCache = { at: 0, ok: false, loggedIn: false } } }
 }
 
 /* ===================== aggregation ===================== */
@@ -555,10 +569,11 @@ function createFetcher(store, log) {
 function computeNeedsMyReview(mr, meLogin) {
   if (!meLogin) return false
   if (mr.state !== 'open' || mr.draft) return false
-  if ((mr.requestedReviewers ?? []).includes(meLogin)) {
-    return !(mr.reviews ?? []).some((r) => r.author?.login === meLogin && r.state !== 'pending')
-  }
-  return false
+  if (!(mr.requestedReviewers ?? []).includes(meLogin)) return false
+  // GitHub only clears a review request on approve / request-changes.
+  // A bare "commented" review leaves me on the requested list, so it must
+  // still count as waiting for my review.
+  return !(mr.reviews ?? []).some((r) => r.author?.login === meLogin && (r.state === 'approved' || r.state === 'changes_requested'))
 }
 
 function commentNeedsReply(mr, c, meLogin) {
@@ -653,13 +668,14 @@ function buildOverview(snapshots, cfg) {
 }
 
 function filterMrs(allMrs, params) {
-  const { repoKey, state, q, needsReview, unresolved, author, sort, limit } = params
+  const { repoKey, state, q, needsReview, unresolved, author, sort, limit, ci } = params
   let out = allMrs
   if (repoKey) out = out.filter((m) => m.repoKey === repoKey)
   if (state && state !== 'all') out = out.filter((m) => m.state === state)
   if (needsReview) out = out.filter((m) => m.needsMyReview)
   if (unresolved) out = out.filter((m) => m.unresolvedCount > 0)
   if (author) out = out.filter((m) => m.author?.login === author || m.author?.name === author)
+  if (ci) out = out.filter((m) => (m.ciState || 'none') === ci)
   if (q) { const s = String(q).toLowerCase(); out = out.filter((m) => m.title?.toLowerCase().includes(s) || String(m.number).includes(s) || m.author?.name?.toLowerCase().includes(s) || m.author?.login?.toLowerCase().includes(s) || m.sourceBranch?.toLowerCase().includes(s) || (m.labels ?? []).some((l) => l.toLowerCase().includes(s))) }
   out = [...out]
   if (sort === 'created') out.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -738,12 +754,29 @@ async function testTargets(cfg, fetcher) {
 
 /* ===================== HTTP plumbing ===================== */
 
+// Serve web/index.html with a process-level cache validated by mtime, so
+// repeat requests skip a 56KB disk read without risking stale content.
+let htmlCache = { mtimeMs: 0, body: '' }
+function readDashboardHtml() {
+  const file = join(webRoot, 'index.html')
+  const st = statSync(file)
+  if (!htmlCache.body || st.mtimeMs !== htmlCache.mtimeMs) {
+    htmlCache = { mtimeMs: st.mtimeMs, body: readFileSync(file, 'utf8') }
+  }
+  return htmlCache.body
+}
+
 function readBody(req, limit = 256 * 1024) {
   return new Promise((resolveP, rejectP) => {
-    let size = 0; const chunks = []
-    req.on('data', (c) => { size += c.length; if (size > limit) { rejectP(new Error('body too large')); req.destroy(); return }; chunks.push(c) })
-    req.on('end', () => resolveP(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', rejectP)
+    let size = 0; let destroyed = false; const chunks = []
+    req.on('data', (c) => {
+      if (destroyed) return
+      size += c.length
+      if (size > limit) { destroyed = true; rejectP(new Error('body too large')); req.destroy(); return }
+      chunks.push(c)
+    })
+    req.on('end', () => { if (!destroyed) resolveP(Buffer.concat(chunks).toString('utf8')) })
+    req.on('error', (err) => { if (!destroyed) { destroyed = true; rejectP(err) } })
   })
 }
 
@@ -756,7 +789,10 @@ export function apply(ctx, loaderConfig = {}) {
   const fetcher = createFetcher(store, log)
   let lastRefreshAt = 0, booted = false
 
-  const ensureBoot = async () => { if (!booted) { booted = true; await store.init() } }
+  const ensureBoot = async () => {
+    if (booted) return
+    try { await store.init(); booted = true } catch (err) { booted = false; throw err }
+  }
   const snapshots = async (force = false) => { await ensureBoot(); const list = await fetcher.refreshAll(force); lastRefreshAt = Date.now(); return list }
   const overviewFrom = (snaps, cfg) => buildOverview(snaps, cfg)
 
@@ -770,7 +806,7 @@ export function apply(ctx, loaderConfig = {}) {
           const url = new URL(req.url, 'http://localhost'); const pathname = url.pathname; const q = url.searchParams
           if (pathname === '/codehub' || pathname === '/codehub/' || pathname === '/codehub/index.html') {
             res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-            const { readFileSync } = await import('node:fs'); res.end(readFileSync(join(webRoot, 'index.html'))); return
+            res.end(readDashboardHtml()); return
           }
           if (pathname !== '/codehub/api') { sendJson({ ok: false, error: 'not-found' }, 404); return }
 
@@ -791,7 +827,7 @@ export function apply(ctx, loaderConfig = {}) {
           if (op === 'mrs') {
             const snaps = await snapshots(); const meLogin = (cfg.me?.login || '').trim(); const all = []
             for (const snap of snaps) for (const mr of snap.mrs ?? []) all.push({ ...decorate(mr, meLogin), repoKey: snap.repoKey, repoPath: snap.repo?.path, repoName: snap.repo?.name })
-            const filtered = filterMrs(all, { repoKey: q.get('repoKey') || '', state: q.get('state') || 'all', q: q.get('q') || '', needsReview: q.get('needsReview') === '1', unresolved: q.get('unresolved') === '1', author: q.get('author') || '', sort: q.get('sort') || 'updated', limit: q.get('limit') || 200 })
+            const filtered = filterMrs(all, { repoKey: q.get('repoKey') || '', state: q.get('state') || 'all', q: q.get('q') || '', needsReview: q.get('needsReview') === '1', unresolved: q.get('unresolved') === '1', author: q.get('author') || '', sort: q.get('sort') || 'updated', limit: q.get('limit') || 200, ci: q.get('ci') || '' })
             sendJson({ ok: true, ...filtered }); return
           }
           if (op === 'mr') {

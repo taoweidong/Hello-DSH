@@ -132,11 +132,32 @@ async function main() {
   assert('repos.discover ok', discover.data.ok === true)
   assert('repos.discover found test repo', discover.data.repos.some((r) => r.path === testRepoDir))
 
+  // --- provider normalization (legacy UI value "git-meta" must map to "git") ---
+  const normRes = await post('/codehub/api?op=config.set', {
+    provider: 'git-meta', me: { name: 'Test', login: 'testuser' }, pollMinutes: 5,
+    ghPath: 'gh', instances: [{ id: 'gh', name: 'GitHub', host: 'github.com', token: 'ghp_test1234abcd' }],
+    repos: [{ id: 'r1', instance: 'gh', path: 'cli/cli', enabled: true }],
+  })
+  assert('config.set normalizes git-meta -> git', normRes.data.config.provider === 'git', `got ${normRes.data.config.provider}`)
+
+  // --- mrs with ci filter (server-side filtering regression) ---
+  const mrsCi = await get('/codehub/api?op=mrs&state=all&ci=failure')
+  assert('mrs ci filter ok', mrsCi.data.ok === true)
+  assert('mrs ci filter has mrs array', Array.isArray(mrsCi.data.mrs))
+
   // --- index.html ---
   const htmlRes = await fetch(`${base}/codehub/index.html`)
   assert('index.html served', htmlRes.status === 200)
   const htmlBody = await htmlRes.text()
   assert('index.html contains CodeHub', htmlBody.includes('CodeHub'))
+
+  // --- SPA inline script parses (syntax guard for web/index.html) ---
+  const scriptMatch = htmlBody.match(/<script>([\s\S]*)<\/script>/)
+  assert('SPA has inline script', !!scriptMatch)
+  if (scriptMatch) {
+    try { new Function(scriptMatch[1]); assert('SPA script parses', true) }
+    catch (e) { assert('SPA script parses', false, e.message) }
+  }
 
   // --- 404 ---
   const notFound = await get('/codehub/api?op=nonexistent')
