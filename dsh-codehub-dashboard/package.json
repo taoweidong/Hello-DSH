@@ -24,6 +24,10 @@
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "node scripts/test-host.mjs",
+    "lint": "eslint ."
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -57,5 +61,8 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "icon": "./icon.svg"
+  "icon": "./icon.svg",
+  "devDependencies": {
+    "eslint": "^9.39.4"
+  }
 }

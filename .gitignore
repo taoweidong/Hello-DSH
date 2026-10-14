@@ -1,0 +1,16 @@
+# dependencies
+node_modules/
+
+# npm
+package-lock.json
+
+# build / test artifacts
+dist/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

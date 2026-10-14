@@ -39,13 +39,6 @@ export const inject = ['webServer']
 
 /* ===================== generic helpers ===================== */
 
-function hash32(str) {
-  let h = 0x811c9dc5
-  const s = String(str)
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) }
-  return h >>> 0
-}
-
 const pad2 = (n) => String(n).padStart(2, '0')
 function dateKey(t) {
   const d = new Date(t)

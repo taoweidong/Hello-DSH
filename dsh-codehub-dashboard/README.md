@@ -43,8 +43,15 @@ dsh plugin --profile desktop add E:\GitHub\Hello-DSH\dsh-codehub-dashboard
 ### 方式二：手动安装
 
 1. 将本目录链接到 profile 的 node_modules：
+
+   **Windows（CMD 管理员）：**
    ```sh
    cmd /c mklink /J "%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-codehub-dashboard" "E:\GitHub\Hello-DSH\dsh-codehub-dashboard"
+   ```
+
+   **macOS / Linux：**
+   ```sh
+   ln -s "$PWD/dsh-codehub-dashboard" ~/.dsh/profiles/desktop/node_modules/dsh-codehub-dashboard
    ```
 2. 编辑 `~/.dsh/profiles/desktop/package.json`：
    - `dependencies` 中添加 `"dsh-codehub-dashboard": "link:E:/GitHub/Hello-DSH/dsh-codehub-dashboard"`
@@ -111,6 +118,16 @@ JSON 字段包括：`number, title, state, isDraft, headRefName, baseRefName, cr
 | POST | `/codehub/api?op=config.set` | 保存配置 |
 | POST | `/codehub/api?op=config.test` | 连通性测试 |
 | GET | `/codehub/api?op=repos.discover&ws=` | 工作区 Git 仓库发现 |
+
+## 🧪 开发
+
+```sh
+npm install   # 仅开发依赖（eslint）
+npm run lint  # eslint（flat config）
+npm test      # 独立 harness：假 cordis ctx + 真 HTTP server，验证全部 API 端点
+```
+
+运行时零第三方依赖：host 半只用 Node 内置模块，SPA 为 vanilla JS + 内联 SVG。
 
 ## 🔐 安全
 
