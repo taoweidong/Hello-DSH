@@ -76,7 +76,11 @@ window.__ModuleLoader__.load({
 
 		function apply(ctx) {
 			const svc = ctx.betterSidebar;
-			if (!svc || typeof svc.registerTab !== "function") return; // service absent: stay inert
+			if (!svc || typeof svc.registerTab !== "function") {
+				// A tab plugin that silently disappears is undebuggable; say why.
+				console.warn("[dsh-codehub-dashboard] ctx.betterSidebar 不可用，CodeHub 标签页未注册。请安装/启用 dsh-better-sidebar（>=0.12.0，badge 能力）");
+				return;
+			}
 
 			// cheap summary polling for the badge (60s); failures are silent
 			const poll = async () => {

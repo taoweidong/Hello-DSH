@@ -208,7 +208,7 @@ interface Overview {
 planSource(repo, cfg, ghOk):
   if cfg.provider == 'gh'       → 'gh'
   if cfg.provider == 'http'     → 'http'
-  if cfg.provider == 'git-meta' → 'git-meta'
+  if cfg.provider == 'git'       → 'git-meta'  // 旧配置值 'git-meta' 由 normalize 映射为 'git'
   if cfg.provider == 'auto':
     if ghOk                     → 'gh'
     elif instance has token     → 'http'
@@ -272,7 +272,7 @@ planSource(repo, cfg, ghOk):
 ```jsonc
 {
   "version": 1,
-  "provider": "auto",           // auto | gh | http | git-meta
+  "provider": "auto",           // auto | gh | http | git（历史值 git-meta 自动迁移为 git）
   "me": { "name": "", "login": "" },
   "pollMinutes": 10,
   "ghPath": "gh",

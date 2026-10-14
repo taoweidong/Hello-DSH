@@ -131,7 +131,7 @@ npm test      # 独立 harness：假 cordis ctx + 真 HTTP server，验证全部
 
 ## 🔐 安全
 
-- Token 持久化在 `~/.dsh/codehub-dashboard/config.json`，文件权限 best-effort 0600
+- Token 持久化在 `~/.dsh/codehub-dashboard/config.json`：POSIX 下尽力设成 0600；**Windows 上 `chmod` 是空操作**，保护依赖用户目录 ACL（该文件为明文，请勿把 `~/.dsh` 放进同步盘）
 - API 响应中 token 一律脱敏为 `****xxxx`
 - 所有外部命令通过 `execFile` 执行（无 shell 注入风险）
 - 路由受 DSH webServer 信任围栏保护

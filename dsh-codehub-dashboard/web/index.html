@@ -257,6 +257,9 @@ svg text{font-family:inherit}
 /* ================= helpers ================= */
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// esc() neutralises quoting but not the scheme: a remote-provided URL must never
+// become a javascript:/data: handler. Only absolute http(s) is linkable.
+const safeUrl = (u) => { const s = String(u ?? ""); return /^https?:\/\/\S+$/i.test(s) ? s : ""; };
 const AV_COLORS = ["#e17055","#0984e3","#6c5ce7","#00b894","#d63031","#e84393","#f39c12","#16a085","#8e44ad","#2d3436","#c0392b","#27ae60"];
 const avColor = (login) => AV_COLORS[Math.abs(hashStr(String(login || "?"))) % AV_COLORS.length];
 function hashStr(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}return h}
@@ -588,7 +591,7 @@ async function openMr(repoKey,number){ $("#drawer").classList.add("open"); $("#b
       ${m.needsMyReview?chip("needs","待我评审"):""}
       ${(m.labels||[]).map(l=>chip("label",l)).join("")}
       ${j.source?chip("src","数据源："+(SRC_CH[j.source]||j.source)):""}
-      ${m.url?`<a class="btn sm" href="${esc(m.url)}" target="_blank" rel="noopener">在 CodeHub 打开 ↗</a>`:""}</div>
+      ${safeUrl(m.url)?`<a class="btn sm" href="${esc(safeUrl(m.url))}" target="_blank" rel="noopener">在 CodeHub 打开 ↗</a>`:""}</div>
     <div class="kv">
       <span class="k">仓库</span><span>${esc(j.repo?.path||repoKey)}</span>
       <span class="k">作者</span><span class="who">${avatar(m.author)} ${esc(m.author?.name||"")} <span class="muted">@${esc(m.author?.login||"")}</span></span>

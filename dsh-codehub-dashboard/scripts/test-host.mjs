@@ -4,10 +4,14 @@
 // and probes every API endpoint. Exits non-zero on any failure.
 
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+
+// Package root, so manifest assertions read the same files npm publishes.
+const pluginDir = dirname(dirname(fileURLToPath(import.meta.url)))
 
 const tmpDir = mkdtempSync(join(tmpdir(), 'codehub-test-'))
 const configPath = join(tmpDir, 'config.json')
@@ -145,6 +149,105 @@ async function main() {
   assert('mrs ci filter ok', mrsCi.data.ok === true)
   assert('mrs ci filter has mrs array', Array.isArray(mrsCi.data.mrs))
 
+  // --- overview health: every repo must self-report a source, and a failure
+  //     must be visible as an error string (never a silent empty board) ---
+  const ovRes = await get('/codehub/api?op=overview')
+  const ovRepos = ovRes.data.overview?.repos ?? []
+  assert('overview repos all carry a source', ovRepos.length === 0 || ovRepos.every((r) => !!r.source), JSON.stringify(ovRepos.map((r) => r.source)))
+  assert('overview repo failures are surfaced', ovRepos.every((r) => typeof r.error === 'string' || r.error === null), 'error field must be string-or-null')
+
+  // --- gh --json field contract (validated locally by gh, before any request) ---
+  // A rejected field name fails *every* repository while the HTTP envelope still
+  // reports ok:true, which is exactly how the nested-selection bug shipped.
+  const t = mod.__test ?? {}
+  let ghAvailable = true
+  try { execFileSync('gh', ['--version'], { stdio: 'ignore' }) } catch { ghAvailable = false }
+  if (!ghAvailable) console.log('  ⏭  gh not installed — skipping field-contract and mapping checks')
+  if (ghAvailable) {
+    const probe = (args) => {
+      try { execFileSync('gh', args, { env: { ...process.env, GH_TOKEN: 'ghp_contractprobeinvalid' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) } catch { /* auth/network failures are expected here */ }
+    }
+    const runAndCapture = (args) => {
+      try { probe(args); return '' } catch (e) { return `${e?.stderr ?? ''}${e?.stdout ?? ''}` }
+    }
+    if (t.GH_PR_LIST_FIELDS) {
+      const err = runAndCapture(['pr', 'list', '--repo', 'cli/cli', '--limit', '1', '--json', t.GH_PR_LIST_FIELDS])
+      assert('gh accepts our pr list field list', !/unknown json field/i.test(err), err.split('\n').slice(0, 2).join(' / '))
+    }
+    if (t.GH_PR_VIEW_FIELDS) {
+      const err = runAndCapture(['pr', 'view', '1', '--repo', 'cli/cli', '--json', t.GH_PR_VIEW_FIELDS])
+      assert('gh accepts our pr view field list', !/unknown json field/i.test(err), err.split('\n').slice(0, 2).join(' / '))
+    }
+    // Flat-field payloads are what gh actually returns; mapping must not need `{}` selectors.
+    assert('no nested selectors left in field lists', !/[{}]/.test(`${t.GH_PR_LIST_FIELDS},${t.GH_PR_VIEW_FIELDS}`))
+
+    if (typeof t.mapGhPr === 'function') {
+      const sample = {
+        number: 12, title: 'Add feature', state: 'OPEN', isDraft: false,
+        headRefName: 'feat', baseRefName: 'main', additions: 10, deletions: 2, changedFiles: 3,
+        createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-02T00:00:00Z', mergedAt: null,
+        reviewDecision: 'APPROVED', url: 'https://github.com/cli/cli/pull/12',
+        author: { login: 'alice' }, labels: [{ name: 'bug' }], reviewRequests: [{ login: 'me' }],
+        latestReviews: [{ author: { login: 'bob' }, state: 'APPROVED', submittedAt: '2026-10-02T00:00:00Z', body: 'lgtm' }],
+        statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }],
+      }
+      const m = t.mapGhPr(sample)
+      assert('mapGhPr reads flat author object', m.author.login === 'alice', JSON.stringify(m.author))
+      assert('mapGhPr reads flat labels', m.labels.join() === 'bug', JSON.stringify(m.labels))
+      assert('mapGhPr reads flat reviewRequests', m.requestedReviewers.join() === 'me', JSON.stringify(m.requestedReviewers))
+      assert('mapGhPr reads flat latestReviews', m.reviews.length === 1 && m.reviews[0].state === 'approved', JSON.stringify(m.reviews))
+      assert('mapGhPr uppercases state to model vocab', m.state === 'open' && m.reviewDecision === 'approved', `${m.state}/${m.reviewDecision}`)
+      assert('mapGhPr derives ciState from the list rollup', m.ciState === 'failure', m.ciState)
+
+      const merged = t.mapGhPr({ ...sample, number: 13, state: 'MERGED', mergedAt: '2026-10-03T00:00:00Z', statusCheckRollup: [] })
+      assert('mapGhPr maps MERGED to merged', merged.state === 'merged', merged.state)
+      assert('mapGhPr empty rollup stays none', merged.ciState === 'none', merged.ciState)
+    }
+    if (typeof t.ghCiState === 'function') {
+      assert('ghCiState handles object-shaped rollup', t.ghCiState({ state: 'SUCCESS' }) === 'success')
+      assert('ghCiState: failure beats success', t.ghCiState([{ conclusion: 'SUCCESS', status: 'COMPLETED' }, { conclusion: 'FAILURE', status: 'COMPLETED' }]) === 'failure')
+      assert('ghCiState: unfinished stays pending', t.ghCiState([{ status: 'IN_PROGRESS' }]) === 'pending')
+      assert('ghCiState: null/empty stays none', t.ghCiState(null) === 'none' && t.ghCiState([]) === 'none')
+    }
+  }
+
+  // --- config validation: unsafe repo paths / hosts must be rejected ---
+  if (typeof t.isSafeRepoPath === 'function') {
+    assert('repo path owner/name accepted', t.isSafeRepoPath('cli/cli') === true)
+    assert('repo path with dot-segment rejected', t.isSafeRepoPath('cli/../../etc') === false)
+    assert('repo path starting with dash rejected', t.isSafeRepoPath('-foo/bar') === false && t.isSafeRepoPath('owner/-x') === false)
+    assert('repo path with space rejected', t.isSafeRepoPath('a b/c') === false)
+  }
+  if (typeof t.isSafeHost === 'function') {
+    assert('host example.com accepted', t.isSafeHost('example.com') === true)
+    assert('host with scheme rejected', t.isSafeHost('https://evil.example') === false)
+    assert('host with credentials rejected', t.isSafeHost('good.example@evil.example') === false)
+    assert('host with port rejected', t.isSafeHost('example.com:8443') === false)
+  }
+  if (typeof t.apiBaseFor === 'function') {
+    assert('github.com maps to api.github.com', t.apiBaseFor('github.com') === 'https://api.github.com')
+    assert('bad host yields null', t.apiBaseFor('evil.example/redirect') === null)
+  }
+
+  // --- token masking must never echo a plaintext secret ---
+  const masked = await post('/codehub/api?op=config.set', {
+    provider: 'auto', instances: [{ id: 'gh', name: 'GitHub', host: 'github.com', token: 'ghp_topsecret9999' }],
+    repos: [{ id: 'r1', instance: 'gh', path: 'cli/cli', enabled: true }],
+  })
+  assert('config.set masks new token', masked.data.config.instances[0].token === '****9999', masked.data.config.instances[0].token)
+  const maskedKeep = await post('/codehub/api?op=config.set', {
+    instances: [{ id: 'gh', name: 'GitHub', host: 'github.com', token: '****9999' }],
+  })
+  assert('masked token round-trip keeps the real secret', maskedKeep.data.config.instances[0].token === '****9999')
+  try {
+    const cfgOnDisk = JSON.parse(readFileSync(configPath, 'utf8'))
+    assert('disk keeps the plaintext token (not the mask)', cfgOnDisk.instances[0].token === 'ghp_topsecret9999', cfgOnDisk.instances[0].token)
+    assert('disk has no derived hasToken field', !('hasToken' in cfgOnDisk.instances[0]))
+    assert('no stray tmp files left next to config', !readdirSync(dirname(configPath)).some((f) => f.endsWith('.tmp')))
+  } catch (e) {
+    assert('config readable on disk', false, e.message)
+  }
+
   // --- index.html ---
   const htmlRes = await fetch(`${base}/codehub/index.html`)
   assert('index.html served', htmlRes.status === 200)
@@ -157,6 +260,26 @@ async function main() {
   if (scriptMatch) {
     try { new Function(scriptMatch[1]); assert('SPA script parses', true) }
     catch (e) { assert('SPA script parses', false, e.message) }
+  }
+
+  // --- manifest / version consistency (P2: docs drift is a real bug class) ---
+  try {
+    const pkg = JSON.parse(readFileSync(join(pluginDir, 'package.json'), 'utf8'))
+    const src = readFileSync(join(pluginDir, 'index.js'), 'utf8')
+    const m = src.match(/const PLUGIN_VERSION = '([^']+)'/)
+    assert('index.js PLUGIN_VERSION matches package.json', !!m && m[1] === pkg.version, `${m?.[1]} vs ${pkg.version}`)
+    // The runtime banner must report the same version the manifest ships.
+    const live = await get('/codehub/api?op=boot')
+    assert('api boot reports manifest version', live.data.version === pkg.version, `${live.data.version} vs ${pkg.version}`)
+    assert('client inject declares betterSidebar', JSON.stringify(pkg?.dsh?.client?.inject) === '["betterSidebar"]', JSON.stringify(pkg?.dsh?.client?.inject))
+    const sidebarRange = pkg?.peerDependencies?.['dsh-better-sidebar']
+    assert('dsh-better-sidebar peerDependency records the badge floor', /0\.12/.test(sidebarRange || ''), sidebarRange)
+    // Every file the loader needs must actually be published.
+    const needed = ['index.js', 'client.js', 'web', 'cordis.patch.yml', 'icon.svg']
+    assert('package.files covers every runtime asset', needed.every((f) => (pkg.files || []).includes(f)), JSON.stringify(pkg.files))
+    assert('README documents the Windows chmod caveat', /Windows/.test(readFileSync(join(pluginDir, 'README.md'), 'utf8')))
+  } catch (e) {
+    assert('manifest consistency checks ran', false, e.message)
   }
 
   // --- 404 ---

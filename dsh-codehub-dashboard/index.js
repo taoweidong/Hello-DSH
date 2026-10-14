@@ -15,8 +15,10 @@
 //           when gh is unavailable but a token is configured.
 //
 // Commands are executed with execFile (no shell), fixed argument lists only.
-// Tokens are persisted in the plugin's own config file (best-effort 0600) and
-// are never echoed back by the API (masked as ****last4).
+// Tokens are persisted in the plugin's own config file and are never echoed back
+// by the API (masked as ****last4). The file is written atomically and chmod'ed
+// 0600 best-effort — note `chmod` is a no-op on Windows, where the ACL of the
+// user profile directory is the only real barrier, so the file stays plaintext.
 
 import { execFile } from 'node:child_process'
 import { existsSync, statSync, readFileSync } from 'node:fs'
@@ -104,12 +106,15 @@ function createConfigStore(filePath, log) {
     out.me = { ...base.me, ...(cfg?.me ?? {}) }
     out.http = { ...base.http, ...(cfg?.http ?? {}) }
     out.instances = Array.isArray(cfg?.instances) ? cfg.instances : []
+    // `hasToken` is derived by masked() for the UI; the SPA posts the masked
+    // config back verbatim, so drop it here instead of persisting a stale flag.
+    out.instances = out.instances.map(({ hasToken, ...rest }) => rest)
     out.repos = Array.isArray(cfg?.repos) ? cfg.repos : []
-      out.pollMinutes = Math.max(1, Math.min(1440, Number(out.pollMinutes) || base.pollMinutes))
-      // "git-meta" was the pre-0.1.1 UI value; map it so hand-edited or
-      // legacy configs keep working instead of silently falling back to auto.
-      if (out.provider === 'git-meta') out.provider = 'git'
-      if (!['auto', 'gh', 'git', 'http'].includes(out.provider)) out.provider = 'auto'
+    out.pollMinutes = Math.max(1, Math.min(1440, Number(out.pollMinutes) || base.pollMinutes))
+    // "git-meta" was the pre-0.1.1 UI value; map it so hand-edited or
+    // legacy configs keep working instead of silently falling back to auto.
+    if (out.provider === 'git-meta') out.provider = 'git'
+    if (!['auto', 'gh', 'git', 'http'].includes(out.provider)) out.provider = 'auto'
     let n = 0; for (const inst of out.instances) if (!inst.id) inst.id = `i${++n}`
     n = 0; for (const repo of out.repos) if (!repo.id) repo.id = `r${++n}`
     return out
@@ -121,7 +126,10 @@ function createConfigStore(filePath, log) {
   }
   const save = async () => {
     await mkdir(dirname(filePath), { recursive: true })
-    const tmp = `${filePath}.tmp`; await writeFile(tmp, JSON.stringify(current, null, 2), 'utf8')
+    // Unique tmp suffix: two concurrent saves writing the same `${filePath}.tmp`
+    // can interleave writeFile/rename and leave a torn or wrong-content config.
+    const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
+    await writeFile(tmp, JSON.stringify(current, null, 2), 'utf8')
     try { await chmod(tmp, 0o600) } catch {}
     await rename(tmp, filePath)
   }
@@ -155,6 +163,35 @@ function effectiveRepos(cfg) {
 const repoName = (path) => String(path ?? '').split('/').pop() || String(path ?? '')
 const repoOwner = (path) => String(path ?? '').split('/')[0] || ''
 
+/**
+ * `owner/name` in the shape GitHub accepts. Repos that fail this are dropped
+ * before their path can reach an execFile argv (`--repo <path>`, where a value
+ * starting with `-` would be parsed as a gh flag) or a REST path segment
+ * (`../x` or `x?y` would rewrite the request target).
+ */
+const SAFE_REPO_PATH = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
+function isSafeRepoPath(p) {
+  if (typeof p !== 'string' || !SAFE_REPO_PATH.test(p)) return false
+  // Reject `.`/`..` segments and values that start with `-` — the latter would
+  // be read as an option rather than the `--repo` argument by gh/cobra.
+  return p.split('/').every((seg) => seg !== '.' && seg !== '..' && !seg.startsWith('-'))
+}
+
+/**
+ * Bare hostname only. `instance.host` is interpolated into an https origin that
+ * we then send the user's Bearer token to, so a value carrying a scheme, port,
+ * path or `@` must never reach it.
+ */
+const SAFE_HOSTNAME = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/
+const isSafeHost = (h) => typeof h === 'string' && h.length <= 253 && SAFE_HOSTNAME.test(h)
+
+/** REST root for an instance, or null when the configured host is unusable. */
+function apiBaseFor(host) {
+  const h = String(host || 'github.com')
+  if (h === 'github.com') return 'https://api.github.com'
+  return isSafeHost(h) ? `https://${h}/api/v3` : null
+}
+
 /* ===================== gh provider (primary) ===================== */
 
 /** Resolve the gh executable. Bare names rely on PATH; paths must exist. */
@@ -166,44 +203,74 @@ async function ghProbe(cfg) {
   const ver = await run(exe, ['--version'])
   if (ver.code !== 0) return { ok: false, detail: clip(ver.stderr || ver.stdout || 'gh --version 失败', 300), ms: Date.now() - t0 }
   const auth = await run(exe, ['auth', 'status'], { env: { ...process.env } })
-  const loggedIn = auth.code === 0 || !/not logged in/i.test(auth.stderr || '')
-  return { ok: true, loggedIn, detail: clip(ver.stdout.trim(), 120) + (loggedIn ? '' : '（未登录，需 gh auth login 或设置 GH_TOKEN）'), ms: Date.now() - t0 }
+  // `gh auth status` exits non-zero for every not-usable state, including an
+  // invalid GH_TOKEN (stderr: "The token in GH_TOKEN is invalid."). Matching on
+  // the literal "not logged in" text used to call that case *logged in*, which
+  // sent users chasing the wrong failure whenever every query then returned 401.
+  const loggedIn = auth.code === 0
+  const authDetail = loggedIn ? '' : clip(auth.stderr || auth.stdout || 'gh auth status 失败', 160)
+  return { ok: true, loggedIn, detail: clip(ver.stdout.trim(), 120) + (loggedIn ? '' : `（未登录或凭据无效：${authDetail || '需 gh auth login / 设置 GH_TOKEN'}）`), ms: Date.now() - t0 }
 }
 
 /** Build environment with optional per-instance GH_TOKEN override. */
 function ghEnv(cfg, instanceId) {
   const inst = (cfg.instances ?? []).find((i) => i.id === instanceId)
-  if (inst?.token) return { ...process.env, GH_TOKEN: inst.token, GH_HOST: inst.host || 'github.com' }
+  // Only a bare hostname may reach GH_HOST; anything else falls back to the
+  // default host instead of redirecting the token to an arbitrary origin.
+  const host = isSafeHost(inst?.host) ? inst.host : 'github.com'
+  if (inst?.token) return { ...process.env, GH_TOKEN: inst.token, GH_HOST: host }
   return process.env
 }
 
-// gh --json uses nested field syntax: author{login,name} (no spaces).
-// Fields verified against gh 2.102.0 documentation.
-const GH_PR_LIST_FIELDS = [
+// gh --json accepts FLAT top-level field names only. Nested GraphQL-style
+// selection (`author{login,name}`) is rejected *locally* by gh with
+// `Unknown JSON field: "author{login"` before any HTTP request is made, so it
+// fails identically whether or not the user is authenticated. gh already
+// returns these fields as fully-formed objects, so no mapping change is needed.
+// Field names verified against the available-fields dump of gh 2.102.0
+// (`gh pr list --json ___` prints it); `statusCheckRollup` is valid for BOTH
+// `pr list` and `pr view`, so CI state does not need the per-PR `pr view` call.
+const GH_PR_COMMON_FIELDS = [
   'number','title','state','isDraft','headRefName','baseRefName',
   'createdAt','updatedAt','mergedAt','additions','deletions','changedFiles',
   'reviewDecision','url',
-  'author{login,name}','labels{name}','reviewRequests{login}',
-  'latestReviews{author{login,name},state,submittedAt,body}',
-].join(',')
-const GH_PR_VIEW_FIELDS = [
-  'number','title','state','isDraft','headRefName','baseRefName',
-  'createdAt','updatedAt','mergedAt','additions','deletions','changedFiles',
-  'reviewDecision','url',
-  'author{login,name}','labels{name}','reviewRequests{login}',
-  'reviews{author{login,name},state,submittedAt,body}',
-  'comments{author{login,name},body,path,line,createdAt}',
+  'author','labels','reviewRequests',
   'statusCheckRollup',
-].join(',')
-// Same fields without statusCheckRollup, used as fallback when the installed
-// gh predates that JSON field (unknown-field error would otherwise fail the
-// whole `gh pr view` call and lose reviews/comments too).
-const GH_PR_VIEW_FIELDS_NO_CI = GH_PR_VIEW_FIELDS.split(',').filter((f) => f !== 'statusCheckRollup').join(',')
+]
+const GH_PR_LIST_FIELDS = [...GH_PR_COMMON_FIELDS, 'latestReviews'].join(',')
+const GH_PR_VIEW_FIELDS = [...GH_PR_COMMON_FIELDS, 'reviews','comments'].join(',')
 
 function ghPerson(o) {
   if (!o) return { name: 'unknown', login: 'unknown' }
   if (typeof o === 'object') return { name: o.name || o.login || 'unknown', login: o.login || 'unknown' }
   return { name: String(o), login: String(o) }
+}
+
+/**
+ * Aggregate gh's `statusCheckRollup` into the plugin's ciState vocabulary.
+ * The rollup is a union of CheckRun and StatusContext entries and gh has shipped
+ * it both as a single object and as a list, with the verdict living in `state`
+ * (StatusContext) or `status` + `conclusion` (CheckRun) — so accept all shapes
+ * and stay honest (`none`) whenever nothing is recognisable.
+ */
+function ghCiState(rollup) {
+  const items = Array.isArray(rollup) ? rollup : (rollup && typeof rollup === 'object' ? [rollup] : [])
+  let sawPending = false, sawRunning = false, sawSuccess = false, sawFailure = false
+  for (const it of items) {
+    if (!it || typeof it !== 'object') continue
+    const status = String(it.status ?? '').toUpperCase()
+    const verdict = String(it.conclusion ?? it.state ?? '').toUpperCase()
+    const isCheckRun = status !== ''
+    const settled = isCheckRun ? status === 'COMPLETED' : ['SUCCESS', 'FAILURE', 'ERROR'].includes(verdict)
+    if (!settled) { sawPending = true; if (['IN_PROGRESS', 'RUNNING', 'QUEUED', 'PENDING'].includes(status)) sawRunning = true; continue }
+    if (['SUCCESS', 'NEUTRAL', 'SKIPPED', 'ACTION_REQUIRED'].includes(verdict) || ['ACTIONS_SKIPPED'].includes(verdict)) sawSuccess = true
+    else if (['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'STARTUP_FAILURE', 'STALE'].includes(verdict)) sawFailure = true
+    else sawSuccess = true
+  }
+  if (sawFailure) return 'failure'
+  if (sawPending || sawRunning) return 'pending'
+  if (sawSuccess) return 'success'
+  return 'none'
 }
 
 function mapGhPr(raw) {
@@ -233,8 +300,9 @@ function mapGhPr(raw) {
     createdAt: isoOr(c.createdAt, raw.updatedAt),
     resolved: false, // gh PR comments don't carry resolved state at list level
   }))
-  // CI status from statusCheckRollup would need an extra field; derive from reviewDecision as proxy
-  const ciState = 'none' // enriched below if needed
+  // `statusCheckRollup` is requested on the list call itself, so CI state is
+  // available for every PR — not only the ones that later get `pr view` detail.
+  const ciState = ghCiState(raw?.statusCheckRollup)
   return {
     number: Number(raw?.number) || 0, title: String(raw?.title ?? ''), author, state,
     draft: !!raw?.isDraft, sourceBranch: raw?.headRefName ?? '', targetBranch: raw?.baseRefName ?? '',
@@ -249,6 +317,7 @@ function mapGhPr(raw) {
 }
 
 async function ghSnapshot(repo, cfg) {
+  if (!isSafeRepoPath(repo.path)) throw new Error(`仓库路径不合法（需 owner/name）：${clip(repo.path, 80)}`)
   const exe = ghExecutable(cfg)
   const env = ghEnv(cfg, repo.instanceId)
   const t0 = Date.now()
@@ -274,18 +343,10 @@ async function ghSnapshot(repo, cfg) {
 
   await mapLimit(detailed, FETCH_CONCURRENCY, async (mr) => {
     try {
-      let viewRes = await run(exe, [
+      const viewRes = await run(exe, [
         'pr', 'view', String(mr.number), '--repo', repo.path,
         '--json', GH_PR_VIEW_FIELDS,
       ], { env })
-      // Older gh builds reject statusCheckRollup as an unknown field; retry
-      // without it rather than losing reviews and comments entirely.
-      if (viewRes.code !== 0 && /unknown (json )?field/i.test(viewRes.stderr || '')) {
-        viewRes = await run(exe, [
-          'pr', 'view', String(mr.number), '--repo', repo.path,
-          '--json', GH_PR_VIEW_FIELDS_NO_CI,
-        ], { env })
-      }
       if (viewRes.code !== 0) return
       let detail
       try { detail = JSON.parse(viewRes.stdout) } catch { return }
@@ -300,35 +361,50 @@ async function ghSnapshot(repo, cfg) {
           body: String(r.body ?? ''),
         })).filter((r) => r.state !== 'pending')
       }
-      // Inline review comments (these are PR review comments, not issue comments)
+      // `comments` on a PR is the *conversation* stream (issue comments); it has
+      // no path/line. Keep it, but do not present it as inline review feedback.
       if (Array.isArray(detail.comments) && detail.comments.length) {
         for (let i = 0; i < detail.comments.length; i++) {
           const c = detail.comments[i]
           mr.comments.push({
             id: `rc-${mr.number}-v-${i}`, author: ghPerson(c.author), body: String(c.body ?? ''),
             file: c.path ?? null, line: c.line != null ? Number(c.line) : null,
-            createdAt: isoOr(c.createdAt, mr.updatedAt), resolved: false,
+            createdAt: isoOr(c.createdAt, mr.updatedAt), resolved: false, kind: 'conversation',
           })
         }
       }
       // CI status from statusCheckRollup if available
-      if (detail.statusCheckRollup) {
-        const sc = detail.statusCheckRollup
-        const st = String(sc.state ?? sc.status ?? '').toUpperCase()
-        if (st === 'SUCCESS' || st === 'COMPLETED') mr.ciState = 'success'
-        else if (st === 'FAILURE' || st === 'ERROR') mr.ciState = 'failure'
-        else if (st === 'PENDING' || st === 'IN_PROGRESS' || st === 'QUEUED') mr.ciState = 'pending'
-      }
+      const detailCi = ghCiState(detail.statusCheckRollup)
+      if (detailCi !== 'none') mr.ciState = detailCi
     } catch { /* enrichment failure is non-fatal */ }
-  })
 
-  // Derive CI state for PRs that didn't get enriched (use reviewDecision as rough proxy)
-  for (const mr of mrs) {
-    if (mr.ciState === 'none' && mr.state === 'open') {
-      // If there's a mergeStateStatus we could use it, but it requires extra fields.
-      // Leave as 'none' — the UI shows "CI —" which is honest.
-    }
-  }
+    // Real inline review comments (path + line) are only exposed by the REST
+    // endpoint, not by `gh pr view --json`. `gh api` reuses the same auth as the
+    // rest of this provider, so no extra token configuration is required.
+    try {
+      const apiRes = await run(exe, [
+        'api', '--paginate', `repos/${repo.path}/pulls/${mr.number}/comments`,
+      ], { env })
+      if (apiRes.code !== 0) return
+      const inline = JSON.parse(apiRes.stdout)
+      if (!Array.isArray(inline)) return
+      const seen = new Set(mr.comments.map((c) => c.id))
+      for (const c of inline) {
+        const id = `rc-${mr.number}-a-${c.id ?? ''}`
+        if (seen.has(id)) continue
+        seen.add(id)
+        mr.comments.push({
+          id,
+          author: { name: c.user?.login || 'unknown', login: c.user?.login || 'unknown' },
+          body: String(c.body ?? ''),
+          file: c.path ?? null,
+          line: c.line != null ? Number(c.line) : (c.original_line != null ? Number(c.original_line) : null),
+          createdAt: isoOr(c.created_at, mr.updatedAt),
+          resolved: false, kind: 'inline',
+        })
+      }
+    } catch { /* inline-comment failure is non-fatal */ }
+  })
 
   mrs.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
   return {
@@ -419,9 +495,11 @@ function mapGithubPr(pr) {
 async function httpSnapshot(repo, cfg) {
   const inst = instanceOf(cfg, repo.instanceId)
   if (!inst?.token) throw new Error(`实例 ${repo.instanceId} 未配置 token`)
+  if (!isSafeRepoPath(repo.path)) throw new Error(`仓库路径不合法（需 owner/name）：${clip(repo.path, 80)}`)
   const timeoutMs = Number(cfg.http?.timeoutMs ?? 15000)
   const host = inst.host || 'github.com'
-  const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+  const apiBase = apiBaseFor(host)
+  if (!apiBase) throw new Error(`实例 host 不合法（需纯域名）：${clip(host, 80)}`)
   const t0 = Date.now()
   const pulls = await httpJson(`${apiBase}/repos/${repo.path}/pulls?state=all&per_page=${Number(cfg.http?.perPage ?? 100)}&sort=updated&direction=desc`, inst.token, timeoutMs)
   if (!Array.isArray(pulls)) throw new Error('pulls 响应不是数组')
@@ -739,7 +817,8 @@ async function testTargets(cfg, fetcher) {
     const t0 = Date.now()
     try {
       const host = inst.host || 'github.com'
-      const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+      const apiBase = apiBaseFor(host)
+      if (!apiBase) { results.push({ target: inst.name || inst.id, kind: 'http-api', ok: false, detail: `host 不合法（需纯域名）：${clip(host, 80)}`, ms: null }); continue }
       const res = await fetch(`${apiBase}/rate_limit`, { headers: { accept: 'application/json', authorization: `Bearer ${inst.token}`, 'user-agent': `dsh-codehub-dashboard/${PLUGIN_VERSION}` }, signal: AbortSignal.timeout(8000) })
       results.push({ target: inst.name || inst.id, kind: 'http-api', ok: res.ok, detail: `HTTP ${res.status} ${host}`, ms: Date.now() - t0 })
     } catch (err) { results.push({ target: inst.name || inst.id, kind: 'http-api', ok: false, detail: clip(err?.message ?? String(err), 200), ms: Date.now() - t0 }) }
@@ -787,11 +866,14 @@ export function apply(ctx, loaderConfig = {}) {
   const configPath = String(loaderConfig?.configPath || process.env.CODEHUB_DASHBOARD_CONFIG || join(homedir(), '.dsh', 'codehub-dashboard', 'config.json'))
   const store = createConfigStore(configPath, log)
   const fetcher = createFetcher(store, log)
-  let lastRefreshAt = 0, booted = false
+  let lastRefreshAt = 0, bootPromise = null
 
-  const ensureBoot = async () => {
-    if (booted) return
-    try { await store.init(); booted = true } catch (err) { booted = false; throw err }
+  // Memoise the promise, not a boolean: with a boolean flag, two requests that
+  // arrive before the load finishes both fall through, and the second one can
+  // read the still-default config and persist it over the real one on save.
+  const ensureBoot = () => {
+    if (!bootPromise) bootPromise = store.init().catch((err) => { bootPromise = null; throw err })
+    return bootPromise
   }
   const snapshots = async (force = false) => { await ensureBoot(); const list = await fetcher.refreshAll(force); lastRefreshAt = Date.now(); return list }
   const overviewFrom = (snaps, cfg) => buildOverview(snaps, cfg)
@@ -805,7 +887,18 @@ export function apply(ctx, loaderConfig = {}) {
           await ensureBoot()
           const url = new URL(req.url, 'http://localhost'); const pathname = url.pathname; const q = url.searchParams
           if (pathname === '/codehub' || pathname === '/codehub/' || pathname === '/codehub/index.html') {
-            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+            // Defence in depth: PR titles/bodies are attacker-influenced strings
+            // rendered inside a same-origin iframe that can reach the config API.
+            // 'unsafe-inline' is required by the SPA's own inline script/styles, so
+            // this CSP does not stop an injected inline handler — it stops the far
+            // worse outcome of loading remote code or exfiltrating to another origin.
+            res.writeHead(200, {
+              'content-type': 'text/html; charset=utf-8',
+              'cache-control': 'no-store',
+              'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+              'x-content-type-options': 'nosniff',
+              'referrer-policy': 'no-referrer',
+            })
             res.end(readDashboardHtml()); return
           }
           if (pathname !== '/codehub/api') { sendJson({ ok: false, error: 'not-found' }, 404); return }
@@ -875,10 +968,21 @@ export function apply(ctx, loaderConfig = {}) {
 
     const ticker = setInterval(() => {
       const cfg = store.get(); const ttl = Math.max(1, Number(cfg.pollMinutes) || 10) * 60_000
-      if (booted && Date.now() - lastRefreshAt > ttl) snapshots(false).catch((err) => log?.warn?.('[codehub] background refresh failed:', err?.message ?? err))
+      if (bootPromise && Date.now() - lastRefreshAt > ttl) snapshots(false).catch((err) => log?.warn?.('[codehub] background refresh failed:', err?.message ?? err))
     }, 60_000)
     const warmup = setTimeout(() => { snapshots(false).catch((err) => log?.warn?.('[codehub] initial refresh failed:', err?.message ?? err)) }, 3000)
 
     return () => { clearInterval(ticker); clearTimeout(warmup); disposeRoute() }
   }, 'codehub-dashboard.routes')
+}
+
+/**
+ * Test-only surface. The gh field list and the payload→model mapping are the
+ * places where a failure is total but silent: one rejected `--json` field makes
+ * every repository error out, and the HTTP envelope still reports `ok: true`.
+ * Exposing them lets the harness pin the contract without a live gh login.
+ */
+export const __test = {
+  mapGhPr, ghCiState, isSafeRepoPath, isSafeHost, apiBaseFor,
+  GH_PR_LIST_FIELDS, GH_PR_VIEW_FIELDS,
 }
