@@ -1,0 +1,61 @@
+{
+  "name": "dsh-codehub-dashboard",
+  "version": "0.1.0",
+  "description": "DSH plugin: GitHub PR / review-comment aggregation dashboard - a better-sidebar tab powered by gh CLI (https://cli.github.com/) that pulls merge requests and review comments across repositories, with statistics charts, a review inbox and multi-instance token configuration.",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "dsh-better-sidebar",
+    "codehub",
+    "merge-request",
+    "code-review",
+    "dashboard"
+  ],
+  "files": [
+    "index.js",
+    "client.js",
+    "web",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=18",
+    "dsh": ">=0.1.0-rc.6 <0.3.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.0-rc.6 <0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "client": {
+      "inject": [
+        "slots"
+      ],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "icon": "./icon.svg"
+}

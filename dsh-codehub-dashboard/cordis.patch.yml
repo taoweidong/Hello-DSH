@@ -1,0 +1,14 @@
+# dsh-codehub-dashboard bundle patch
+#
+# Mounts the plugin row when the package is selected in the profile's
+# `dsh.profile.bundles` (the standard `dsh plugin add` channel).
+#
+# Optional loader config (all settings are also editable at runtime inside
+# the sidebar "CodeHub" tab, persisted to ~/.dsh/codehub-dashboard/config.json):
+#
+#   config:
+#     configPath: 'D:/somewhere/codehub-config.json'   # override config file location
+#
+- insert:
+    - id: codehub-dashboard
+      name: 'dsh-codehub-dashboard'

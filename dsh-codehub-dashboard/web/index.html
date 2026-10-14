@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CodeHub 看板</title>
+<style>
+:root{
+  --bg:#f6f8fa; --panel:#ffffff; --panel2:#f6f8fa; --text:#1f2328; --muted:#656d76;
+  --border:#d0d7de; --border2:#eaeef2; --accent:#4d6bfe; --accent-soft:#4d6bfe1a;
+  --green:#1a7f37; --green-bg:#dafbe1; --red:#cf222e; --red-bg:#ffebe9;
+  --purple:#8250df; --purple-bg:#fbefff; --yellow:#9a6700; --yellow-bg:#fff8c5;
+  --gray:#57606a; --gray-bg:#eaeef2; --blue:#0969da; --blue-bg:#ddf4ff;
+  --shadow:0 1px 3px rgba(27,31,36,.08),0 8px 24px rgba(27,31,36,.06);
+  --radius:10px;
+}
+@media (prefers-color-scheme: dark){
+:root{
+  --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --text:#e6edf3; --muted:#8b949e;
+  --border:#30363d; --border2:#21262d; --accent:#6d8cff; --accent-soft:#6d8cff22;
+  --green:#3fb950; --green-bg:#12261e; --red:#f85149; --red-bg:#2d1618;
+  --purple:#bc8cff; --purple-bg:#211a2e; --yellow:#d29922; --yellow-bg:#2a2314;
+  --gray:#8b949e; --gray-bg:#21262d; --blue:#58a6ff; --blue-bg:#12233b;
+  --shadow:0 1px 3px rgba(0,0,0,.4);
+}
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+#app{display:flex;flex-direction:column;height:100%;min-height:0}
+a{color:var(--accent);text-decoration:none}
+button{font:inherit;cursor:pointer}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:6px;border:2px solid var(--bg)}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ===== top bar ===== */
+.topbar{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;white-space:nowrap}
+.brand svg{color:var(--accent)}
+.nav{display:flex;gap:4px;flex-wrap:wrap}
+.nav button{border:0;background:transparent;color:var(--muted);padding:6px 12px;border-radius:8px;font-weight:500}
+.nav button:hover{background:var(--panel2);color:var(--text)}
+.nav button.active{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.topbar .spacer{flex:1}
+.srcbadge{font-size:12px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:2px 10px;white-space:nowrap}
+.btn{border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:8px;padding:6px 14px;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{background:var(--panel2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{color:var(--red);border-color:var(--red-bg);background:transparent}
+.btn.sm{padding:3px 10px;font-size:12.5px;border-radius:6px}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.spin{animation:rot 1s linear infinite;transform-origin:50% 50%}
+@keyframes rot{to{transform:rotate(360deg)}}
+.updated{font-size:12px;color:var(--muted);white-space:nowrap}
+
+/* ===== layout ===== */
+.main{flex:1;overflow:auto;padding:16px;min-height:0}
+.wrap{max-width:1180px;margin:0 auto}
+.banner{display:flex;gap:10px;align-items:center;background:var(--yellow-bg);border:1px solid var(--yellow);color:var(--text);border-radius:var(--radius);padding:9px 14px;margin-bottom:14px;font-size:13px}
+.banner .x{margin-left:auto;background:none;border:0;color:var(--muted);font-size:16px;line-height:1}
+.grid{display:grid;gap:14px}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+.kpi{padding:12px 14px;cursor:pointer;transition:transform .12s ease,border-color .12s}
+.kpi:hover{transform:translateY(-2px);border-color:var(--accent)}
+.kpi .lab{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.kpi .val{font-size:26px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+.kpi .sub{font-size:11.5px;color:var(--muted)}
+.kpi.hot .val{color:var(--accent)}
+.kpi.warn .val{color:var(--red)}
+.kpi.ok .val{color:var(--green)}
+.charts2{grid-template-columns:3fr 2fr}
+.charts2b{grid-template-columns:1fr 1fr}
+@media(max-width:900px){.charts2,.charts2b{grid-template-columns:1fr}}
+.card .hd{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--border2);font-weight:600;font-size:13.5px}
+.card .hd .sub{font-weight:400;color:var(--muted);font-size:12px}
+.card .bd{padding:12px 14px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:6px}
+.legend .dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+
+/* ===== chips ===== */
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;border-radius:999px;padding:1px 9px;white-space:nowrap;border:1px solid transparent}
+.chip.open{background:var(--green-bg);color:var(--green)}
+.chip.merged{background:var(--purple-bg);color:var(--purple)}
+.chip.closed{background:var(--red-bg);color:var(--red)}
+.chip.draft{background:var(--gray-bg);color:var(--gray)}
+.chip.approved{background:var(--green-bg);color:var(--green)}
+.chip.changes_requested{background:var(--red-bg);color:var(--red)}
+.chip.pending{background:var(--yellow-bg);color:var(--yellow)}
+.chip.none{background:var(--gray-bg);color:var(--gray)}
+.chip.ci-success{background:var(--green-bg);color:var(--green)}
+.chip.ci-failure{background:var(--red-bg);color:var(--red)}
+.chip.ci-pending{background:var(--yellow-bg);color:var(--yellow)}
+.chip.ci-none{background:var(--gray-bg);color:var(--gray)}
+.chip.src{background:var(--blue-bg);color:var(--blue);font-weight:500}
+.chip.needs{background:var(--accent-soft);color:var(--accent)}
+.chip.reply{background:var(--yellow-bg);color:var(--yellow)}
+.chip.resolved{background:var(--gray-bg);color:var(--gray);font-weight:500}
+.chip.label{background:var(--panel2);color:var(--muted);border-color:var(--border);font-weight:500}
+
+/* ===== avatar ===== */
+.av{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;color:#fff;font-size:11px;font-weight:700;flex:none}
+.av.lg{width:30px;height:30px;font-size:13px}
+.who{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.who .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ===== MR table ===== */
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.toolbar select,.toolbar input[type=text],.toolbar input[type=search]{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 10px;font:inherit;max-width:220px}
+.toolbar input[type=search]{min-width:180px}
+.tgl{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);background:var(--panel);border:1px solid var(--border);border-radius:999px;padding:4px 11px;cursor:pointer;user-select:none}
+.tgl input{accent-color:var(--accent);margin:0}
+.tgl.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.mrlist{display:flex;flex-direction:column}
+.mrrow{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-bottom:1px solid var(--border2);cursor:pointer}
+.mrrow:last-child{border-bottom:0}
+.mrrow:hover{background:var(--panel2)}
+.mrrow .no{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12.5px;flex:none;width:52px;padding-top:2px}
+.mrrow .body{flex:1;min-width:0}
+.mrrow .t1{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.mrrow .title{font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.mrrow .t2{display:flex;gap:10px;align-items:center;color:var(--muted);font-size:12px;margin-top:3px;flex-wrap:wrap}
+.mrrow .metrics{display:flex;gap:12px;align-items:center;flex:none;padding-top:2px;font-size:12px;color:var(--muted)}
+.branch{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;background:var(--panel2);border:1px solid var(--border2);border-radius:6px;padding:0 6px;color:var(--muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.repo-tag{font-size:11.5px;color:var(--blue);background:var(--blue-bg);border-radius:6px;padding:0 7px;white-space:nowrap}
+.adds{color:var(--green)} .dels{color:var(--red)}
+
+/* ===== reviews inbox ===== */
+.group{margin-bottom:14px}
+.group .ghd{display:flex;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border2);cursor:pointer;flex-wrap:wrap}
+.group .ghd:hover{background:var(--panel2)}
+.group .ghd .title{font-weight:600}
+.cmt{display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border2)}
+.cmt:last-child{border-bottom:0}
+.cmt .body{flex:1;min-width:0}
+.cmt .meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:3px}
+.cmt .txt{white-space:pre-wrap;word-break:break-word}
+.filechip{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;background:var(--blue-bg);color:var(--blue);border-radius:6px;padding:1px 8px}
+
+/* ===== repos ===== */
+.repogrid{grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+.repo .hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.repo .hd .nm{font-weight:700;font-size:14px}
+.repo .hd .owner{color:var(--muted);font-size:12.5px}
+.repo .desc{color:var(--muted);font-size:12.5px;margin:6px 0 10px;min-height:19px}
+.repo .nums{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;text-align:center;margin-bottom:10px}
+.repo .nums .n{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
+.repo .nums .l{font-size:11px;color:var(--muted)}
+.stackbar{display:flex;height:8px;border-radius:5px;overflow:hidden;background:var(--gray-bg)}
+.stackbar i{display:block;height:100%}
+.repo .ft{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.errbox{background:var(--red-bg);color:var(--red);border-radius:8px;padding:6px 10px;font-size:12px;margin-top:8px;word-break:break-all}
+
+/* ===== feed ===== */
+.feed{max-height:430px;overflow:auto}
+.feed .ev{display:flex;gap:9px;padding:7px 14px;border-bottom:1px solid var(--border2);font-size:12.8px;align-items:baseline}
+.feed .ev:last-child{border-bottom:0}
+.feed .ic{flex:none;width:20px;text-align:center}
+.feed .tx{flex:1;min-width:0}
+.feed .tx .ti{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feed .when{color:var(--muted);font-size:11.5px;flex:none}
+
+/* ===== charts ===== */
+.hbar-row{display:grid;grid-template-columns:170px 1fr 44px;gap:8px;align-items:center;margin-bottom:7px;font-size:12.5px}
+.hbar-row .lb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.hbar-track{background:var(--panel2);border-radius:5px;height:16px;overflow:hidden;display:flex}
+.hbar-track i{display:block;height:100%}
+.hbar-row .vv{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+svg text{font-family:inherit}
+
+/* ===== drawer ===== */
+.backdrop{position:fixed;inset:0;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .18s}
+.backdrop.open{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(600px,94vw);background:var(--panel);border-left:1px solid var(--border);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(102%);transition:transform .22s ease;display:flex;flex-direction:column;z-index:50}
+.drawer.open{transform:none}
+.drawer .dhd{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.drawer .dhd .t{font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drawer .dbd{flex:1;overflow:auto;padding:14px 16px;min-height:0}
+.drawer .dclose{border:0;background:transparent;color:var(--muted);font-size:20px;line-height:1;padding:4px 8px;border-radius:6px}
+.drawer .dclose:hover{background:var(--panel2);color:var(--text)}
+.kv{display:grid;grid-template-columns:92px 1fr;gap:6px 10px;font-size:13px;margin-bottom:14px}
+.kv .k{color:var(--muted)}
+.sect{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:16px 0 8px;display:flex;align-items:center;gap:8px}
+.sect::after{content:"";flex:1;height:1px;background:var(--border2)}
+.rv,.cm2{border:1px solid var(--border2);border-radius:8px;padding:9px 11px;margin-bottom:8px;background:var(--panel2)}
+.rv .meta,.cm2 .meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:4px}
+.rv .txt,.cm2 .txt{font-size:13px;white-space:pre-wrap;word-break:break-word}
+
+/* ===== settings ===== */
+.setform{max-width:860px}
+.fld{margin-bottom:13px}
+.fld label{display:block;font-size:12.5px;font-weight:600;color:var(--muted);margin-bottom:4px}
+.fld input[type=text],.fld input[type=password],.fld input[type=number],.fld select{width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit}
+.fld input:focus,.fld select:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+.fld .hint{font-size:11.5px;color:var(--muted);margin-top:3px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+@media(max-width:700px){.row2,.row3{grid-template-columns:1fr}}
+.listrow{display:grid;gap:8px;align-items:center;border:1px solid var(--border2);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--panel2)}
+.listrow.inst{grid-template-columns:1fr 2fr 90px 1.4fr auto}
+.listrow.repo{grid-template-columns:110px 2fr 2fr 90px auto}
+@media(max-width:900px){.listrow.inst,.listrow.repo{grid-template-columns:1fr 1fr}.listrow .full{grid-column:1/-1}}
+.listrow input,.listrow select{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:6px 9px;font:inherit;width:100%}
+.sectcard{margin-bottom:16px}
+.sectcard .hd{justify-content:space-between}
+.testres{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+.testres td,.testres th{border-bottom:1px solid var(--border2);padding:5px 8px;text-align:left}
+.testres .ok{color:var(--green);font-weight:700}
+.testres .bad{color:var(--red);font-weight:700}
+.discover .item{display:flex;gap:8px;align-items:center;padding:6px 2px;border-bottom:1px dashed var(--border2);font-size:12.5px}
+.discover .item .p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.setbar{display:flex;gap:10px;align-items:center;margin-top:6px;position:sticky;bottom:0;background:linear-gradient(transparent,var(--bg) 30%);padding:12px 0}
+
+/* ===== misc ===== */
+.empty{padding:44px 20px;text-align:center;color:var(--muted)}
+.empty .big{font-size:34px;margin-bottom:8px}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(80px);background:var(--text);color:var(--bg);border-radius:10px;padding:9px 18px;font-size:13px;opacity:0;transition:all .25s;z-index:99;box-shadow:var(--shadow);max-width:80vw}
+.toast.show{transform:translateX(-50%);opacity:1}
+.muted{color:var(--muted)}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.trunc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.count-pill{background:var(--panel2);border:1px solid var(--border2);border-radius:999px;font-size:11.5px;color:var(--muted);padding:0 8px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="topbar">
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="4.5" cy="3.5" r="2" stroke="currentColor" stroke-width="1.4"/>
+        <circle cx="4.5" cy="12.5" r="2" stroke="currentColor" stroke-width="1.4"/>
+        <circle cx="12" cy="8" r="2" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M4.5 5.5v5M4.5 9.2c0-2.2 1.3-3 5.6-3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+        <path d="M9.4 3.9l1.3 1.9 2-.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
+      CodeHub 看板
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="spacer"></div>
+    <span class="srcbadge" id="srcbadge"></span>
+    <span class="updated" id="updated"></span>
+    <button class="btn" id="refreshBtn" title="立即刷新数据">
+      <svg id="refreshIco" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 1 1 .908-.418A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
+      刷新
+    </button>
+  </div>
+  <div class="main" id="main"></div>
+</div>
+<div class="backdrop" id="backdrop"></div>
+<div class="drawer" id="drawer"><div class="dhd"><span class="t" id="drawerTitle"></span><button class="dclose" id="drawerClose" title="关闭">✕</button></div><div class="dbd" id="drawerBody"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ================= helpers ================= */
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const AV_COLORS = ["#e17055","#0984e3","#6c5ce7","#00b894","#d63031","#e84393","#f39c12","#16a085","#8e44ad","#2d3436","#c0392b","#27ae60"];
+const avColor = (login) => AV_COLORS[Math.abs(hashStr(String(login || "?"))) % AV_COLORS.length];
+function hashStr(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}return h}
+const initials = (p) => { const n = String(p?.name || p?.login || "?").trim(); return /[\u4e00-\u9fa5]/.test(n) ? n.slice(-2) : n.slice(0, 2).toUpperCase(); };
+function avatar(p, lg){ return `<span class="av${lg?" lg":""}" style="background:${avColor(p?.login)}" title="${esc(p?.name||"")} (${esc(p?.login||"")})">${esc(initials(p))}</span>`; }
+function relTime(iso){ if(!iso) return "—"; const t=new Date(iso).getTime(); if(!Number.isFinite(t)) return "—";
+  const d=Date.now()-t; if(d<60e3) return "刚刚"; if(d<3600e3) return Math.floor(d/60e3)+" 分钟前"; if(d<86400e3) return Math.floor(d/3600e3)+" 小时前";
+  if(d<30*86400e3) return Math.floor(d/86400e3)+" 天前"; const dt=new Date(t); return `${dt.getMonth()+1}月${dt.getDate()}日`; }
+const absTime = (iso) => iso ? new Date(iso).toLocaleString("zh-CN",{hour12:false}) : "";
+const fmtNum = (n) => Number(n||0).toLocaleString("zh-CN");
+
+async function api(op, params){ const u=new URL("/codehub/api", location.origin); u.searchParams.set("op",op);
+  for(const [k,v] of Object.entries(params||{})) if(v!==undefined&&v!==null&&v!=="") u.searchParams.set(k,String(v));
+  const r=await fetch(u,{headers:{accept:"application/json"}}); const j=await r.json().catch(()=>({ok:false,error:"bad response"}));
+  if(!r.ok||!j.ok) throw new Error(j.error||("HTTP "+r.status)); return j; }
+async function apiPost(op, body){ const r=await fetch("/codehub/api?op="+encodeURIComponent(op),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body||{})});
+  const j=await r.json().catch(()=>({ok:false,error:"bad response"})); if(!r.ok||!j.ok) throw new Error(j.error||("HTTP "+r.status)); return j; }
+
+function toast(msg, ms){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"), ms||2600); }
+
+const STATE_CH = { open:"开放", merged:"已合并", closed:"已关闭" };
+const RD_CH = { approved:"已通过", changes_requested:"需修改", pending:"评审中", none:"未评审" };
+const CI_TXT = { success:"CI ✓", failure:"CI ✗", pending:"CI ●", none:"CI —" };
+const SRC_CH = { gh:"gh CLI", http:"REST API", "git-meta":"Git 元信息", error:"出错" };
+const chip = (cls, txt, title) => `<span class="chip ${cls}"${title?` title="${esc(title)}"`:""}>${esc(txt)}</span>`;
+const stateChip = (mr) => mr.draft && mr.state==="open" ? chip("draft","草稿") : chip(mr.state, STATE_CH[mr.state]||mr.state);
+const rdChip = (mr) => chip(mr.reviewDecision||"none", RD_CH[mr.reviewDecision||"none"]||"—");
+const ciChip = (mr) => chip("ci-"+(mr.ciState||"none"), CI_TXT[mr.ciState||"none"]||"—");
+
+/* ================= state & router ================= */
+const params = new URLSearchParams(location.search);
+const CWD = params.get("cwd") || "";
+const state = {
+  boot: null, overview: null, view: "overview", busy: false,
+  mrFilters: { repoKey:"", state:"all", q:"", needsReview:false, unresolved:false, ci:"", sort:"updated" },
+  mrData: null,
+  rvFilters: { repoKey:"", unresolved:false, needsReply:false, q:"" },
+  rvData: null,
+  configDraft: null, discover: null, testResults: null, saving: false,
+  bannerClosed: false,
+};
+function currentHash(){ const h=(location.hash||"#/overview").slice(2); const [v,...rest]=h.split("&");
+  const p={}; for(const kv of rest){ const [k,val]=kv.split("="); if(k) p[k]=decodeURIComponent(val||""); } return {view:v||"overview",p}; }
+function nav(view, p){ const qs=p&&Object.keys(p).length?"&"+Object.entries(p).filter(([,v])=>v!==""&&v!==false&&v!=null).map(([k,v])=>k+"="+encodeURIComponent(v)).join("&"):"";
+  location.hash="#/"+view+qs; }
+window.addEventListener("hashchange", ()=>route());
+
+function route(){ const {view,p}=currentHash(); state.view=["overview","mrs","reviews","repos","settings"].includes(view)?view:"overview";
+  if(state.view==="mrs") Object.assign(state.mrFilters,{repoKey:p.repoKey||"",state:p.state||"all",needsReview:p.needsReview==="1",unresolved:p.unresolved==="1",q:p.q||"",ci:p.ci||"",sort:p.sort||state.mrFilters.sort});
+  if(state.view==="reviews") Object.assign(state.rvFilters,{repoKey:p.repoKey||"",unresolved:p.unresolved==="1",needsReply:p.needsReply==="1",q:p.q||""});
+  render(); }
+
+/* ================= data loading ================= */
+async function boot(){ try{ state.boot=await api("boot"); state.overview= state.boot.hasData ? (await api("overview")).overview : null; }
+  catch(e){ toast("加载失败: "+e.message,4000); } route(); startAutoRefresh(); }
+async function loadOverview(force){ const j=force?await api("refresh"):await api("overview"); state.overview=j.overview; state.boot&&(state.boot.hasData=true); }
+async function loadMrs(){ const f=state.mrFilters; const j=await api("mrs",{repoKey:f.repoKey,state:f.state,q:f.q,needsReview:f.needsReview?"1":"",unresolved:f.unresolved?"1":"",sort:f.sort,limit:200}); state.mrData=j; }
+async function loadReviews(){ const f=state.rvFilters; const j=await api("reviews",{repoKey:f.repoKey,unresolved:f.unresolved?"1":"",needsReply:f.needsReply?"1":"",q:f.q,limit:300}); state.rvData=j; }
+function startAutoRefresh(){ setInterval(async ()=>{ if(document.visibilityState!=="visible"||state.busy) return;
+    if(state.view==="settings") return; try{ await loadOverview(false); render(); }catch{} }, 60000); }
+
+/* ================= charts ================= */
+function donut(dist){ const total=Math.max(1,dist.open+dist.merged+dist.closed);
+  const segs=[["var(--green)",dist.open],["var(--purple)",dist.merged],["var(--red)",dist.closed]];
+  let acc=0; const R=52,C=2*Math.PI*R; let paths="";
+  for(const [color,v] of segs){ if(!v) continue; const frac=v/total;
+    paths+=`<circle cx="70" cy="70" r="${R}" fill="none" stroke="${color}" stroke-width="17" stroke-dasharray="${(frac*C-2).toFixed(1)} ${C.toFixed(1)}" stroke-dashoffset="${(-acc*C+C/4).toFixed(1)}" stroke-linecap="butt"><title>${frac*100}%</title></circle>`; acc+=frac; }
+  return `<div style="display:flex;align-items:center;gap:16px">
+    <svg width="140" height="140" viewBox="0 0 140 140">${paths||`<circle cx="70" cy="70" r="${R}" fill="none" stroke="var(--gray-bg)" stroke-width="17"/>`}
+      <text x="70" y="66" text-anchor="middle" font-size="22" font-weight="700" fill="var(--text)">${total}</text>
+      <text x="70" y="84" text-anchor="middle" font-size="10.5" fill="var(--muted)">MR 总数</text></svg>
+    <div style="flex:1">
+      ${[["开放",dist.open,"var(--green)"],["已合并",dist.merged,"var(--purple)"],["已关闭",dist.closed,"var(--red)"]].map(([l,v,c])=>
+        `<div style="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:12.5px"><span style="width:10px;height:10px;border-radius:3px;background:${c}"></span><span class="muted" style="width:52px">${l}</span><b style="font-variant-numeric:tabular-nums">${v}</b><span class="muted" style="font-size:11.5px">${total?Math.round(v/total*100):0}%</span></div>`).join("")}
+    </div></div>`; }
+
+function lineChart(rows){ if(!rows||!rows.length) return `<div class="empty">暂无数据</div>`;
+  const W=640,H=210,PL=34,PR=10,PT=12,PB=24; const iw=W-PL-PR, ih=H-PT-PB;
+  const maxV=Math.max(4,...rows.map(r=>Math.max(r.opened,r.merged,r.comments)));
+  const yMax=Math.ceil(maxV/4)*4;
+  const x=(i)=>PL+(rows.length===1?iw/2:i*iw/(rows.length-1));
+  const y=(v)=>PT+ih-(v/yMax)*ih;
+  const series=[["opened","新建 MR","var(--accent)"],["merged","合并","var(--purple)"],["comments","检视意见","var(--yellow)"]];
+  let grid=""; for(let g=0;g<=4;g++){ const yy=PT+ih*g/4; grid+=`<line x1="${PL}" y1="${yy}" x2="${W-PR}" y2="${yy}" stroke="var(--border2)" stroke-width="1"/><text x="${PL-6}" y="${yy+3.5}" text-anchor="end" font-size="9.5" fill="var(--muted)">${Math.round(yMax*(1-g/4))}</text>`; }
+  let xlabels=""; const step=Math.max(1,Math.floor(rows.length/6));
+  rows.forEach((r,i)=>{ if(i%step===0||i===rows.length-1) xlabels+=`<text x="${x(i)}" y="${H-7}" text-anchor="middle" font-size="9.5" fill="var(--muted)">${r.date.slice(5)}</text>`; });
+  let lines="";
+  for(const [key,,color] of series){ const pts=rows.map((r,i)=>`${x(i).toFixed(1)},${y(r[key]||0).toFixed(1)}`).join(" ");
+    lines+=`<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>`;
+    lines+=rows.map((r,i)=>(r[key]||0)>0?`<circle cx="${x(i).toFixed(1)}" cy="${y(r[key]).toFixed(1)}" r="2.4" fill="${color}"><title>${r.date} · ${key==="opened"?"新建":key==="merged"?"合并":"意见"} ${r[key]}</title></circle>`:"").join(""); }
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${grid}${xlabels}${lines}</svg>
+    <div class="legend">${series.map(([,l,c])=>`<span><span class="dot" style="background:${c}"></span>${l}</span>`).join("")}</div>`; }
+
+function hbarStacked(repos){ if(!repos.length) return `<div class="empty">暂无仓库</div>`;
+  const max=Math.max(1,...repos.map(r=>r.counts.open));
+  return repos.map(r=>{ const open=r.counts.open, need=r.counts.needsReview;
+    const wO=Math.max(0,(open-need)/max*100), wN=need/max*100;
+    return `<div class="hbar-row" title="${esc(r.path)}：开放 ${open}，其中待我评审 ${need}">
+      <span class="lb"><a href="#/mrs&repoKey=${encodeURIComponent(r.key)}">${esc(r.name)}</a></span>
+      <span class="hbar-track"><i style="width:${wO}%;background:var(--green)"></i><i style="width:${wN}%;background:var(--accent)"></i></span>
+      <span class="vv">${open}</span></div>`; }).join("")
+    + `<div class="legend"><span><span class="dot" style="background:var(--green)"></span>其他开放 MR</span><span><span class="dot" style="background:var(--accent)"></span>待我评审</span></div>`; }
+
+function hbarReviewers(rows){ if(!rows.length) return `<div class="empty">暂无评审活动</div>`;
+  const max=Math.max(1,...rows.map(r=>r.comments+r.reviews));
+  return rows.map(r=>{ const c=r.comments/max*100, v=r.reviews/max*100;
+    return `<div class="hbar-row" title="${esc(r.name)}：评审 ${r.reviews} 次（通过 ${r.approvals} / 打回 ${r.changesRequested}），意见 ${r.comments} 条（未解决 ${r.unresolved}）">
+      <span class="lb">${avatar(r)} ${esc(r.name)}</span>
+      <span class="hbar-track"><i style="width:${v}%;background:var(--purple)"></i><i style="width:${c}%;background:var(--yellow)"></i></span>
+      <span class="vv">${r.comments+r.reviews}</span></div>`; }).join("")
+    + `<div class="legend"><span><span class="dot" style="background:var(--purple)"></span>评审次数</span><span><span class="dot" style="background:var(--yellow)"></span>检视意见</span></div>`; }
+
+/* ================= views ================= */
+function kpi(cls,lab,val,sub,hashP){ return `<div class="card kpi ${cls}" onclick="location.hash='${hashP}'"><div class="lab">${lab}</div><div class="val">${fmtNum(val)}</div>${sub?`<div class="sub">${sub}</div>`:""}</div>`; }
+
+function viewOverview(){ const ov=state.overview; if(!ov) return emptyState();
+  const s=ov.summary;
+  return `<div class="wrap">
+  ${banner()}
+  <div class="grid kpis">
+    ${kpi("hot","开放 MR",s.openMrs,s.drafts?`含 ${s.drafts} 个草稿`:"","#/mrs&state=open")}
+    ${kpi(s.needsReview?"warn":"","待我评审",s.needsReview,s.me?`身份：${esc(s.me.name)}`:"未配置身份","#/mrs&needsReview=1")}
+    ${kpi(s.unresolvedComments?"warn":"","未解决检视意见",s.unresolvedComments,`共 ${fmtNum(s.totalComments)} 条`,"#/reviews&unresolved=1")}
+    ${kpi(s.needsReply?"hot":"","需我回复",s.needsReply,"","#/reviews&needsReply=1")}
+    ${kpi(s.failingCi?"warn":"ok","CI 失败（开放中）",s.failingCi,"","#/mrs&state=open&ci=failure")}
+    ${kpi("ok","本周合并",s.mergedThisWeek,`累计合并 ${fmtNum(s.mergedMrs)}`,"#/mrs&state=merged")}
+  </div>
+  <div class="grid charts2" style="margin-bottom:14px">
+    <div class="card"><div class="hd">活跃趋势 <span class="sub">最近 30 天</span></div><div class="bd">${lineChart(ov.activity)}</div></div>
+    <div class="card"><div class="hd">MR 状态分布</div><div class="bd">${donut(ov.statusDist)}</div></div>
+  </div>
+  <div class="grid charts2b" style="margin-bottom:14px">
+    <div class="card"><div class="hd">各仓库开放 MR</div><div class="bd">${hbarStacked(ov.repos)}</div></div>
+    <div class="card"><div class="hd">评审活跃 Top <span class="sub">评审 + 意见</span></div><div class="bd">${hbarReviewers(ov.topReviewers)}</div></div>
+  </div>
+  <div class="card"><div class="hd">最近动态 <span class="count-pill">${ov.recent.length}</span></div>
+    <div class="feed">${ov.recent.map(feedRow).join("")||`<div class="empty">暂无动态</div>`}</div></div>
+</div>`; }
+
+const EV_IC = { opened:["🟢","新建了 MR"], merged:["🟣","合并了 MR"], comment:["💬","发表了检视意见"], review:["👀","提交了评审"] };
+function feedRow(e){ const [ic,txt]=EV_IC[e.type]||["•",""];
+  return `<div class="ev"><span class="ic">${ic}</span><span class="tx">
+    <b>${esc(e.actor||"")}</b> ${txt} <a href="javascript:void(0)" data-mr="${esc(e.repoKey)}|${e.mrNumber}" class="ti" style="display:inline">${esc(e.title||("#"+e.mrNumber))}</a>
+    <span class="muted">· ${esc(e.repoName||"")}</span></span><span class="when" title="${esc(absTime(e.at))}">${relTime(e.at)}</span></div>`; }
+
+function emptyState(){ return `<div class="wrap"><div class="card"><div class="empty"><div class="big">📦</div>
+  <b>还没有可显示的仓库数据</b><p class="muted" style="max-width:460px;margin:8px auto">请先在「设置」中完成以下两步：<br/>1. 确保已安装并登录 gh CLI（<code>gh auth login</code>），或配置 GitHub Personal Access Token<br/>2. 添加要监控的 GitHub 仓库（owner/name 格式）</p>
+  <button class="btn primary" onclick="location.hash='#/settings'">去设置</button></div></div></div>`; }
+
+function banner(){ const ov=state.overview; if(!ov||state.bannerClosed) return "";
+  const errN=ov.summary.errors;
+  if(!errN) return "";
+  return `<div class="banner">⚠️ <b>&nbsp;${errN}&nbsp;</b> 个仓库拉取失败 — 请检查 gh CLI 登录状态（<code>gh auth status</code>）或 HTTP token 配置。<button class="x" id="bannerClose" title="关闭">✕</button></div>`; }
+
+function viewMrs(){ const ov=state.overview; if(!ov) return emptyState();
+  const f=state.mrFilters; const data=state.mrData;
+  const repoOpts=ov.repos.map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("");
+  let rows=data?data.mrs:[];
+  if(f.ci) rows=rows.filter(m=>m.ciState===f.ci);
+  const body=rows.length?rows.map(mrRow).join(""):`<div class="empty">没有符合条件的 MR</div>`;
+  return `<div class="wrap">
+  <div class="toolbar">
+    <select id="fRepo"><option value="">全部仓库</option>${repoOpts}</select>
+    <select id="fState">${[["all","全部状态"],["open","开放"],["merged","已合并"],["closed","已关闭"]].map(([v,l])=>`<option value="${v}"${f.state===v?" selected":""}>${l}</option>`).join("")}</select>
+    <input type="search" id="fQ" placeholder="搜索标题 / 作者 / 分支 / #号" value="${esc(f.q)}" />
+    <label class="tgl${f.needsReview?" on":""}"><input type="checkbox" id="fNeeds"${f.needsReview?" checked":""}/>待我评审</label>
+    <label class="tgl${f.unresolved?" on":""}"><input type="checkbox" id="fUnres"${f.unresolved?" checked":""}/>有未解决意见</label>
+    <select id="fSort">${[["updated","按更新排序"],["created","按创建排序"],["comments","按意见数排序"]].map(([v,l])=>`<option value="${v}"${f.sort===v?" selected":""}>${l}</option>`).join("")}</select>
+    <div class="spacer" style="flex:1"></div>
+    <span class="count-pill">${data?fmtNum(data.total):"—"} 条</span>
+  </div>
+  <div class="card"><div class="mrlist" id="mrlist">${body}</div></div></div>`; }
+
+function mrRow(m){ return `<div class="mrrow" data-mr="${esc(m.repoKey)}|${m.number}">
+  <span class="no">#${m.number}</span>
+  <div class="body">
+    <div class="t1">${stateChip(m)}<span class="title">${esc(m.title)}</span>
+      ${m.needsMyReview?chip("needs","待我评审"):""}
+      ${(m.labels||[]).slice(0,3).map(l=>chip("label",l)).join("")}</div>
+    <div class="t2"><span class="repo-tag">${esc(m.repoPath||m.repoName||"")}</span>
+      ${avatar(m.author)}<span>${esc(m.author?.name||m.author?.login||"")}</span>
+      <span class="branch" title="${esc(m.sourceBranch)} → ${esc(m.targetBranch)}">${esc(m.sourceBranch)} → ${esc(m.targetBranch)}</span>
+      <span title="${esc(absTime(m.updatedAt))}">更新于 ${relTime(m.updatedAt)}</span></div>
+  </div>
+  <div class="metrics">${rdChip(m)}${ciChip(m)}
+    <span title="检视意见（未解决）">💬 ${m.commentCount}${m.unresolvedCount?` <b style="color:var(--red)">(${m.unresolvedCount})</b>`:""}</span>
+    <span class="adds">+${fmtNum(m.additions)}</span><span class="dels">-${fmtNum(m.deletions)}</span></div>
+</div>`; }
+
+function viewReviews(){ const ov=state.overview; if(!ov) return emptyState();
+  const f=state.rvFilters; const data=state.rvData;
+  const repoOpts=ov.repos.map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("");
+  let groups="";
+  if(data&&data.comments.length){
+    const byMr=new Map();
+    for(const c of data.comments){ const k=c.repoKey+"|"+c.mrNumber; if(!byMr.has(k)) byMr.set(k,{c,mrs:[]}); byMr.get(k).mrs.push(c); }
+    for(const {c,mrs} of byMr.values()){
+      groups+=`<div class="card group"><div class="ghd" data-mr="${esc(c.repoKey)}|${c.mrNumber}">
+        ${stateChip(c)}<span class="repo-tag">${esc(c.repoPath||c.repoName)}</span>
+        <span class="title">#${c.mrNumber} ${esc(c.mrTitle)}</span>
+        <span class="count-pill">${mrs.length} 条意见</span>${mrs.some(x=>x.needsReply)?chip("reply","需我回复"):""}</div>
+        ${mrs.map(cmtRow).join("")}</div>`;
+    }
+  } else groups=`<div class="card"><div class="empty">${f.unresolved||f.needsReply?"🎉 没有符合条件的检视意见":"暂无检视意见"}</div></div>`;
+  return `<div class="wrap">
+  <div class="toolbar">
+    <select id="rRepo"><option value="">全部仓库</option>${repoOpts}</select>
+    <label class="tgl${f.unresolved?" on":""}"><input type="checkbox" id="rUnres"${f.unresolved?" checked":""}/>未解决</label>
+    <label class="tgl${f.needsReply?" on":""}"><input type="checkbox" id="rReply"${f.needsReply?" checked":""}/>需我回复</label>
+    <input type="search" id="rQ" placeholder="搜索内容 / 作者 / 文件" value="${esc(f.q)}" />
+    <div style="flex:1"></div><span class="count-pill">${data?fmtNum(data.total):"—"} 条</span>
+  </div>${groups}</div>`; }
+
+function cmtRow(c){ return `<div class="cmt">${avatar(c.author)}<div class="body">
+  <div class="meta"><b>${esc(c.author?.name||c.author?.login)}</b>
+    <span title="${esc(absTime(c.createdAt))}">${relTime(c.createdAt)}</span>
+    ${c.file?`<span class="filechip" title="${esc(c.file)}${c.line?":"+c.line:""}">${esc(c.file)}${c.line?":"+c.line:""}</span>`:""}
+    ${c.resolved?chip("resolved","已解决"):""}${c.needsReply?chip("reply","需我回复"):""}</div>
+  <div class="txt">${esc(c.body)}</div></div></div>`; }
+
+function viewRepos(){ const ov=state.overview; if(!ov) return emptyState();
+  if(!ov.repos.length) return emptyState();
+  return `<div class="wrap"><div class="grid repogrid">${ov.repos.map(repoCard).join("")}</div></div>`; }
+
+function repoCard(r){ const c=r.counts; const tot=Math.max(1,c.open+c.merged+c.closed);
+  return `<div class="card repo"><div class="bd">
+    <div class="hd"><span class="nm">${esc(r.name)}</span><span class="owner">${esc(r.owner)}/</span>
+      <div style="flex:1"></div>${chip("src",SRC_CH[r.source]||r.source)}</div>
+    <div class="desc">${esc(r.description||"")}</div>
+    <div class="nums">
+      <div><div class="n" style="color:var(--green)">${c.open}</div><div class="l">开放</div></div>
+      <div><div class="n" style="color:var(--accent)">${c.needsReview}</div><div class="l">待我评审</div></div>
+      <div><div class="n" style="color:var(--yellow)">${c.unresolved}</div><div class="l">未解决意见</div></div>
+      <div><div class="n" style="color:var(--red)">${c.failingCi}</div><div class="l">CI 失败</div></div>
+      <div><div class="n" style="color:var(--purple)">${c.mergedWeek}</div><div class="l">本周合并</div></div>
+    </div>
+    <div class="stackbar" title="开放 ${c.open} / 已合并 ${c.merged} / 已关闭 ${c.closed}">
+      <i style="width:${c.open/tot*100}%;background:var(--green)"></i>
+      <i style="width:${c.merged/tot*100}%;background:var(--purple)"></i>
+      <i style="width:${c.closed/tot*100}%;background:var(--red)"></i></div>
+    ${r.error?`<div class="errbox">⚠ ${esc(r.error)}</div>`:""}
+    ${r.degradedNote?`<div class="errbox" style="background:var(--yellow-bg);color:var(--yellow)">⚠ ${esc(r.degradedNote)}</div>`:""}
+    <div class="ft"><span class="branch">⑂ ${esc(r.defaultBranch||"main")}</span>
+      ${r.localPath?`<span class="trunc" style="max-width:150px" title="${esc(r.localPath)}">📁 ${esc(r.localPath.split(/[\\\\/]/).pop())}</span>`:""}
+      <span title="${esc(absTime(r.lastActivity))}">最近活动 ${relTime(r.lastActivity)}</span>
+      <div style="flex:1"></div>
+      <a class="btn sm" href="#/mrs&repoKey=${encodeURIComponent(r.key)}">查看 MR</a></div>
+  </div></div>`; }
+
+/* ---------- settings ---------- */
+function draft(){ if(!state.configDraft&&state.boot) state.configDraft=JSON.parse(JSON.stringify(state.boot.config)); return state.configDraft; }
+function viewSettings(){ const cfg=draft(); if(!cfg) return `<div class="wrap"><div class="empty">加载中…</div></div>`;
+  const provDesc={auto:"自动：优先 gh CLI → HTTP API（如配置了 token）",gh:"gh CLI：使用 GitHub 官方命令行工具拉取真实 PR / Review / Comment 数据（需 gh auth login 或 GH_TOKEN）",http:"REST API：直接调用 GitHub REST API v3（需在「实例」中配置 Personal Access Token）","git-meta":"Git 元信息：仅从本地 git 仓库读取默认分支等元数据，不拉取 MR（需配合 gh 或 HTTP 使用）"};
+  return `<div class="wrap"><div class="setform">
+  <div class="card sectcard"><div class="hd">数据源与身份</div><div class="bd">
+    <div class="row2">
+      <div class="fld"><label>数据源（provider）</label><select id="cfgProvider">${["auto","gh","http","git-meta"].map(p=>`<option value="${p}"${cfg.provider===p?" selected":""}>${p}</option>`).join("")}</select>
+        <div class="hint" id="provHint">${esc(provDesc[cfg.provider]||"")}</div></div>
+      <div class="fld"><label>轮询间隔（分钟）</label><input type="number" id="cfgPoll" min="1" max="1440" value="${cfg.pollMinutes}"/>
+        <div class="hint">后台自动刷新周期；页面上也可手动刷新</div></div>
+    </div>
+    <div class="row2">
+      <div class="fld"><label>我的名字（显示用）</label><input type="text" id="cfgMeName" value="${esc(cfg.me?.name||"")}" placeholder="如：陶伟东"/></div>
+      <div class="fld"><label>我的登录名（login）</label><input type="text" id="cfgMeLogin" value="${esc(cfg.me?.login||"")}" placeholder="如：taowd"/>
+        <div class="hint">用于计算「待我评审 / 需我回复」</div></div>
+    </div>
+  </div></div>
+
+  <div class="card sectcard"><div class="hd">CodeHub 实例（认证 token）<button class="btn sm" id="addInst">＋ 添加实例</button></div><div class="bd" id="instList">
+    ${cfg.instances.length?cfg.instances.map((inst,i)=>instRow(inst,i)).join(""):`<div class="muted" style="font-size:12.5px">未配置实例。gh CLI 模式下无需配置（使用 gh auth login 的凭据）；HTTP API 模式需添加实例并填入 Personal Access Token。</div>`}
+  </div></div>
+
+  <div class="card sectcard"><div class="hd">仓库 <span style="display:flex;gap:6px"><button class="btn sm" id="discoverBtn" ${CWD?"":"disabled title=未获得工作区路径"}>🔍 从工作区发现</button><button class="btn sm" id="addRepo">＋ 手动添加</button></span></div><div class="bd">
+    <div id="repoList">${cfg.repos.length?cfg.repos.map((r,i)=>repoRow(r,i,cfg)).join(""):`<div class="muted" style="font-size:12.5px">请添加 GitHub 仓库（owner/name 格式），或使用「从工作区发现」自动扫描本地 Git 仓库。</div>`}</div>
+    <div id="discoverBox">${state.discover?discoverBox():""}</div>
+  </div></div>
+
+  <div class="card sectcard"><div class="hd">gh CLI（GitHub 官方命令行工具）</div><div class="bd">
+    <div class="fld"><label>gh 可执行文件路径</label><input type="text" id="cfgGhPath" value="${esc(cfg.ghPath||"gh")}" placeholder="如：C:/Program Files/GitHub CLI/gh.exe 或 gh（依赖 PATH）"/>
+      <div class="hint">需先运行 <code>gh auth login</code> 完成认证，或设置环境变量 <code>GH_TOKEN</code>。也可在下方「实例」中配置 token 作为备选。<br/>参考：<a href="https://cli.github.com/" target="_blank" rel="noopener">https://cli.github.com/</a></div></div>
+  </div></div>
+
+  ${state.testResults?`<div class="card sectcard"><div class="hd">连通性测试结果</div><div class="bd"><table class="testres">
+    <tr><th>目标</th><th>类型</th><th>结果</th><th>详情</th><th>耗时</th></tr>
+    ${state.testResults.map(t=>`<tr><td>${esc(t.target)}</td><td>${esc(t.kind)}</td><td class="${t.ok?"ok":"bad"}">${t.ok?"✓ 通过":"✗ 失败"}</td><td class="muted">${esc(t.detail||"")}</td><td class="muted">${t.ms!=null?t.ms+"ms":"—"}</td></tr>`).join("")}
+  </table></div></div>`:""}
+
+  <div class="setbar">
+    <button class="btn primary" id="saveBtn" ${state.saving?"disabled":""}>${state.saving?"保存中…":"💾 保存并刷新"}</button>
+    <button class="btn" id="testBtn">🔌 测试连接（已保存配置）</button>
+    <button class="btn" id="resetBtn">↩ 放弃修改</button>
+    <span class="muted" style="font-size:12px">配置文件：<span class="mono">${esc(state.boot?.configPath||"")}</span>（token 落盘加密权限 0600，接口返回一律脱敏）</span>
+  </div>
+</div></div>`; }
+
+function instRow(inst,i){ return `<div class="listrow inst">
+  <input type="text" data-inst="${i}" data-k="name" value="${esc(inst.name||"")}" placeholder="名称，如：我的 GitHub"/>
+  <input type="text" data-inst="${i}" data-k="host" value="${esc(inst.host||"github.com")}" placeholder="github.com"/>
+  <input type="password" data-inst="${i}" data-k="token" value="${esc(inst.token||"")}" placeholder="Personal Access Token（HTTP API 模式需要）"/>
+  <button class="btn sm danger" data-delinst="${i}">删除</button></div>`; }
+
+function repoRow(r,i,cfg){ return `<div class="listrow repo">
+  <select data-repo="${i}" data-k="instance">${(cfg.instances.length?cfg.instances:[{id:"github.com",name:"github.com"}]).map(x=>`<option value="${esc(x.id)}"${(r.instance||"github.com")===x.id?" selected":""}>${esc(x.name||x.id)}</option>`).join("")}
+    ${(cfg.instances.some(x=>x.id===r.instance)||!r.instance)?"":`<option value="${esc(r.instance||"github.com")}" selected>${esc(r.instance||"github.com")}</option>`}</select>
+  <input type="text" data-repo="${i}" data-k="path" value="${esc(r.path||"")}" placeholder="owner/name（CodeHub 仓库路径）"/>
+  <input type="text" data-repo="${i}" data-k="localPath" value="${esc(r.localPath||"")}" placeholder="本地路径（可选，git 数据源）"/>
+  <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted)"><input type="checkbox" data-repo="${i}" data-k="enabled" ${r.enabled!==false?"checked":""} style="accent-color:var(--accent)"/>启用</label>
+  <button class="btn sm danger" data-delrepo="${i}">删除</button></div>`; }
+
+function discoverBox(){ const d=state.discover;
+  if(!d.length) return `<div class="muted" style="font-size:12.5px;margin-top:8px">工作区（${esc(CWD)}）下未发现 Git 仓库。</div>`;
+  return `<div class="discover" style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px">
+    <b style="font-size:12.5px">发现 ${d.length} 个仓库：</b>
+    ${d.map((r,i)=>`<div class="item"><input type="checkbox" data-disc="${i}" ${r.remotePath?"checked":""} style="accent-color:var(--accent)"/>
+      <b>${esc(r.name)}</b><span class="p" title="${esc(r.path)}">${esc(r.path)}</span>
+      <span class="muted mono" style="font-size:11px">${esc(r.remotePath||r.remote||"无远端")}</span></div>`).join("")}
+    <button class="btn sm primary" id="discAdd" style="margin-top:8px">添加选中仓库</button></div>`; }
+
+/* ---------- drawer ---------- */
+async function openMr(repoKey,number){ $("#drawer").classList.add("open"); $("#backdrop").classList.add("open");
+  $("#drawerTitle").textContent=`MR #${number}`; $("#drawerBody").innerHTML=`<div class="empty">加载中…</div>`;
+  try{ const j=await api("mr",{repoKey,number}); const m=j.mr;
+    $("#drawerTitle").innerHTML=`<span class="trunc">#${m.number} ${esc(m.title)}</span>`;
+    $("#drawerBody").innerHTML=`
+    <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      ${stateChip(m)}${rdChip(m)}${ciChip(m)}
+      ${m.needsMyReview?chip("needs","待我评审"):""}
+      ${(m.labels||[]).map(l=>chip("label",l)).join("")}
+      ${j.source?chip("src","数据源："+(SRC_CH[j.source]||j.source)):""}
+      ${m.url?`<a class="btn sm" href="${esc(m.url)}" target="_blank" rel="noopener">在 CodeHub 打开 ↗</a>`:""}</div>
+    <div class="kv">
+      <span class="k">仓库</span><span>${esc(j.repo?.path||repoKey)}</span>
+      <span class="k">作者</span><span class="who">${avatar(m.author)} ${esc(m.author?.name||"")} <span class="muted">@${esc(m.author?.login||"")}</span></span>
+      <span class="k">分支</span><span class="branch">${esc(m.sourceBranch)} → ${esc(m.targetBranch)}</span>
+      <span class="k">创建 / 更新</span><span title="${esc(absTime(m.createdAt))}">${relTime(m.createdAt)}</span> / <span title="${esc(absTime(m.updatedAt))}">${relTime(m.updatedAt)}</span>
+      ${m.mergedAt?`<span class="k">合并时间</span><span title="${esc(absTime(m.mergedAt))}">${relTime(m.mergedAt)}</span>`:""}
+      <span class="k">变更规模</span><span><span class="adds">+${fmtNum(m.additions)}</span> <span class="dels">-${fmtNum(m.deletions)}</span> · ${m.changedFiles} 个文件${m.commits?` · ${m.commits} 次提交`:""}</span>
+      <span class="k">请求评审</span><span>${(m.requestedReviewers||[]).map(l=>`<span class="chip label">@${esc(l)}</span>`).join(" ")||"—"}</span>
+    </div>
+    <div class="sect">评审（${(m.reviews||[]).length}）</div>
+    ${(m.reviews||[]).length?m.reviews.map(rv=>`<div class="rv"><div class="meta">${avatar(rv.author)}<b>${esc(rv.author?.name||rv.author?.login)}</b>
+      ${chip(rv.state,RD_CH[rv.state==="commented"?"pending":rv.state]||rv.state,"")}
+      <span title="${esc(absTime(rv.submittedAt))}">${relTime(rv.submittedAt)}</span></div>
+      ${rv.body?`<div class="txt">${esc(rv.body)}</div>`:""}</div>`).join(""):`<div class="muted" style="font-size:12.5px">暂无评审记录</div>`}
+    <div class="sect">检视意见（${(m.comments||[]).length}${m.unresolvedCount?` · 未解决 ${m.unresolvedCount}`:""}）</div>
+    ${(m.comments||[]).length?m.comments.map(c=>`<div class="cm2"><div class="meta">${avatar(c.author)}<b>${esc(c.author?.name||c.author?.login)}</b>
+      <span title="${esc(absTime(c.createdAt))}">${relTime(c.createdAt)}</span>
+      ${c.file?`<span class="filechip">${esc(c.file)}${c.line?":"+c.line:""}</span>`:""}
+      ${c.resolved?chip("resolved","已解决"):""}${c.needsReply?chip("reply","需我回复"):""}</div>
+      <div class="txt">${esc(c.body)}</div></div>`).join(""):`<div class="muted" style="font-size:12.5px">暂无检视意见</div>`}`;
+  }catch(e){ $("#drawerBody").innerHTML=`<div class="empty">加载失败：${esc(e.message)}</div>`; } }
+function closeDrawer(){ $("#drawer").classList.remove("open"); $("#backdrop").classList.remove("open"); }
+
+/* ================= render ================= */
+const VIEWS=[["overview","📊 概览"],["mrs","🔀 MR"],["reviews","💬 检视意见"],["repos","📚 仓库"],["settings","⚙️ 设置"]];
+function render(){
+  $("#nav").innerHTML=VIEWS.map(([v,l])=>`<button data-nav="${v}" class="${state.view===v?"active":""}">${l}</button>`).join("");
+  const ov=state.overview; const s=ov?.summary;
+  $("#srcbadge").textContent=!ov?"…":s.errors>0?`${s.repos-s.errors} 正常 / ${s.errors} 出错`:`实时数据（${s.repos} 仓库）`;
+  $("#updated").textContent=ov?`更新于 ${new Date(ov.generatedAt).toLocaleTimeString("zh-CN",{hour12:false})}`:"";
+  const m=$("#main");
+  m.innerHTML = state.view==="overview"?viewOverview()
+    : state.view==="mrs"?viewMrs()
+    : state.view==="reviews"?viewReviews()
+    : state.view==="repos"?viewRepos()
+    : viewSettings();
+  if(state.view==="mrs"&&!state.mrData) refreshMrs();
+  if(state.view==="reviews"&&!state.rvData) refreshReviews();
+  const bc=$("#bannerClose"); if(bc) bc.onclick=(e)=>{e.stopPropagation();state.bannerClosed=true;render();};
+}
+async function withBusy(fn){ state.busy=true; $("#refreshIco").classList.add("spin");
+  try{ await fn(); }catch(e){ toast("出错了："+e.message,4000); }
+  finally{ state.busy=false; $("#refreshIco").classList.remove("spin"); } }
+async function refreshMrs(){ await withBusy(async()=>{ await loadMrs(); render(); }); }
+async function refreshReviews(){ await withBusy(async()=>{ await loadReviews(); render(); }); }
+
+/* ================= events ================= */
+document.addEventListener("click",async (e)=>{
+  const navBtn=e.target.closest("[data-nav]"); if(navBtn){ nav(navBtn.dataset.nav); return; }
+  const mrEl=e.target.closest("[data-mr]"); if(mrEl){ const [rk,num]=mrEl.dataset.mr.split("|"); openMr(rk,Number(num)); return; }
+  if(e.target.closest("#drawerClose")||e.target.closest("#backdrop")){ closeDrawer(); return; }
+  if(e.target.closest("#refreshBtn")){ await withBusy(async()=>{ await loadOverview(true); state.mrData=null; state.rvData=null; if(state.view==="mrs")await loadMrs(); if(state.view==="reviews")await loadReviews(); render(); toast("已刷新"); }); return; }
+  if(e.target.closest("#addInst")){ const c=draft(); c.instances.push({id:"i"+Date.now(),name:"",host:"github.com",token:""}); render(); return; }
+  if(e.target.closest("#addRepo")){ const c=draft(); c.repos.push({id:"r"+Date.now(),instance:c.instances[0]?.id||"github.com",path:"",localPath:"",enabled:true}); render(); return; }
+  const di=e.target.closest("[data-delinst]"); if(di){ draft().instances.splice(Number(di.dataset.delinst),1); render(); return; }
+  const dr=e.target.closest("[data-delrepo]"); if(dr){ draft().repos.splice(Number(dr.dataset.delrepo),1); render(); return; }
+  if(e.target.closest("#testBtn")){ await withBusy(async()=>{ const j=await apiPost("config.test",{}); state.testResults=j.results; render(); }); return; }
+  if(e.target.closest("#resetBtn")){ state.configDraft=null; render(); toast("已放弃未保存的修改"); return; }
+  if(e.target.closest("#saveBtn")){ await saveConfig(); return; }
+  if(e.target.closest("#discoverBtn")){ await withBusy(async()=>{ const j=await api("repos.discover",{ws:CWD,depth:2}); state.discover=j.repos; render(); }); return; }
+  if(e.target.closest("#discAdd")){ const c=draft(); const boxes=document.querySelectorAll("[data-disc]");
+    boxes.forEach((b)=>{ if(!b.checked) return; const r=state.discover[Number(b.dataset.disc)];
+      c.repos.push({id:"r"+Date.now()+Math.random().toString(16).slice(2,6),instance:c.instances[0]?.id||"github.com",path:r.remotePath||("local/"+r.name),localPath:r.path,enabled:true}); });
+    state.discover=null; render(); toast("已添加到仓库列表，记得保存"); return; }
+});
+document.addEventListener("keydown",(e)=>{ if(e.key==="Escape") closeDrawer(); });
+document.addEventListener("change",(e)=>{
+  const t=e.target;
+  if(t.dataset&&t.dataset.inst!==undefined){ draft().instances[Number(t.dataset.inst)][t.dataset.k]=t.value; return; }
+  if(t.dataset&&t.dataset.repo!==undefined){ const r=draft().repos[Number(t.dataset.repo)];
+    r[t.dataset.k]=t.dataset.k==="enabled"?t.checked:t.value; return; }
+  const c=draft(); if(!c||state.view!=="settings") return;
+  if(t.id==="cfgProvider"){ c.provider=t.value; $("#provHint")&&render(); }
+  else if(t.id==="cfgPoll") c.pollMinutes=Number(t.value)||10;
+  else if(t.id==="cfgMeName") c.me.name=t.value;
+  else if(t.id==="cfgMeLogin") c.me.login=t.value;
+  else if(t.id==="cfgGhPath") c.ghPath=t.value;
+});
+document.addEventListener("input",(e)=>{ const t=e.target;
+  if(t.id==="fQ"){ state.mrFilters.q=t.value; debounce(()=>nav("mrs",flatMrFilters()),350); }
+  if(t.id==="rQ"){ state.rvFilters.q=t.value; debounce(()=>nav("reviews",flatRvFilters()),350); } });
+document.addEventListener("change",(e)=>{ const t=e.target;
+  if(t.id==="fRepo"){ state.mrFilters.repoKey=t.value; nav("mrs",flatMrFilters()); }
+  else if(t.id==="fState"){ state.mrFilters.state=t.value; nav("mrs",flatMrFilters()); }
+  else if(t.id==="fSort"){ state.mrFilters.sort=t.value; refreshMrs(); }
+  else if(t.id==="fNeeds"){ state.mrFilters.needsReview=t.checked; nav("mrs",flatMrFilters()); }
+  else if(t.id==="fUnres"){ state.mrFilters.unresolved=t.checked; nav("mrs",flatMrFilters()); }
+  else if(t.id==="rRepo"){ state.rvFilters.repoKey=t.value; nav("reviews",flatRvFilters()); }
+  else if(t.id==="rUnres"){ state.rvFilters.unresolved=t.checked; nav("reviews",flatRvFilters()); }
+  else if(t.id==="rReply"){ state.rvFilters.needsReply=t.checked; nav("reviews",flatRvFilters()); } });
+const flatMrFilters=()=>{const f=state.mrFilters;return {repoKey:f.repoKey,state:f.state==="all"?"":f.state,q:f.q,needsReview:f.needsReview?"1":"",unresolved:f.unresolved?"1":"",ci:f.ci};};
+const flatRvFilters=()=>{const f=state.rvFilters;return {repoKey:f.repoKey,unresolved:f.unresolved?"1":"",needsReply:f.needsReply?"1":"",q:f.q};};
+let _dbt=null; const debounce=(fn,ms)=>{clearTimeout(_dbt);_dbt=setTimeout(fn,ms);};
+
+async function saveConfig(){ const c=draft(); if(!c) return;
+  state.saving=true; render();
+  try{ const j=await apiPost("config.set",c);
+    state.boot.config=j.config; state.configDraft=JSON.parse(JSON.stringify(j.config));
+    state.overview=j.overview; state.mrData=null; state.rvData=null; state.testResults=null; state.saving=false;
+    toast("已保存，数据已刷新 ✓"); nav("overview");
+  }catch(e){ state.saving=false; render(); toast("保存失败："+e.message,4000); } }
+
+/* re-render hash-driven filter changes for mrs/reviews */
+const _route0=route;
+route=function(){ const prev=state.view; _route0();
+  if(state.view==="mrs") refreshMrs(); else if(state.view==="reviews") refreshReviews();
+  else { state.busy||render(); if(state.view==="overview"&&!state.overview) withBusy(async()=>{await loadOverview(false);render();}); } };
+
+boot();
+</script>
+</body>
+</html>
