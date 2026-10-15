@@ -25,6 +25,8 @@ dsh plugin --profile desktop add E:\GitHub\Hello-DSH\dsh-codehub-dashboard
 
 安装后重启 DSH，在左侧导航选择 **CodeHub**。本项目不会自行修改已安装 DSH 的配置。
 
+打包 tar 包、离线交付、手动摆放、卸载与回滚的完整操作步骤见 [docs/packaging-and-offline-install.md](docs/packaging-and-offline-install.md)。
+
 ## 使用
 
 1. 在设置中选择数据源：`auto`（gh 优先，读取失败时可回退到已配置 token 的 HTTP）、`gh`、`http` 或 `git`（仅本地元信息）。

@@ -54,9 +54,9 @@
     "manifestVersion": 1,
     "client": {
       "inject": [
-        "slots",
-        "layout",
-        "uiWorkspace"
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ],
       "platform": "web"
     },
