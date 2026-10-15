@@ -37,7 +37,7 @@ const EXEC_TIMEOUT_MS = 30_000
 const FETCH_CONCURRENCY = 3
 const DAY_MS = 86_400_000
 
-export const name = 'codehub-dashboard'
+export const name = 'dsh-codehub-dashboard'
 export const inject = { required: ['webServer', 'connection'], optional: ['llm', 'sessions', 'sessionController'] }
 
 /* ===================== generic helpers ===================== */
