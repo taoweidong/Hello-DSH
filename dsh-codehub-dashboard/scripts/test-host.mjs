@@ -37,6 +37,7 @@ async function main() {
   const routes = []
   const effects = []
   const ctx = {
+    connection: { admit() { return { peer: {} } } },
     logger: { warn: (...a) => console.log('[warn]', ...a) },
     webServer: {
       register(route) { routes.push(route); return () => {} },
@@ -50,7 +51,7 @@ async function main() {
   // Import and apply
   const mod = await import('../index.js')
   assert('exports name', mod.name === 'codehub-dashboard', `got ${mod.name}`)
-  assert('exports inject', JSON.stringify(mod.inject) === '["webServer"]', `got ${JSON.stringify(mod.inject)}`)
+  assert('exports inject requires webServer', mod.inject.required.includes('webServer'), `got ${JSON.stringify(mod.inject)}`)
   assert('exports apply', typeof mod.apply === 'function')
 
   mod.apply(ctx, { configPath })
@@ -82,13 +83,13 @@ async function main() {
 
   // --- config.set ---
   const setRes = await post('/codehub/api?op=config.set', {
-    provider: 'auto', me: { name: 'Test', login: 'testuser' }, pollMinutes: 5,
+    provider: 'git', me: { name: 'Test', login: 'testuser' }, pollMinutes: 5,
     ghPath: 'gh', instances: [{ id: 'gh', name: 'GitHub', host: 'github.com', token: 'ghp_test1234abcd' }],
     repos: [{ id: 'r1', instance: 'gh', path: 'cli/cli', enabled: true }],
   })
   assert('config.set ok', setRes.data.ok === true)
   assert('config.set masked token', setRes.data.config.instances[0].token === '****abcd')
-  assert('config.set has overview', !!setRes.data.overview)
+  assert('config.set queues refresh without waiting', setRes.data.overview === null && setRes.data.refreshQueued === true)
 
   // --- config.get ---
   const cfgGet = await get('/codehub/api?op=config.get')
@@ -164,19 +165,19 @@ async function main() {
   try { execFileSync('gh', ['--version'], { stdio: 'ignore' }) } catch { ghAvailable = false }
   if (!ghAvailable) console.log('  ⏭  gh not installed — skipping field-contract and mapping checks')
   if (ghAvailable) {
-    const probe = (args) => {
-      try { execFileSync('gh', args, { env: { ...process.env, GH_TOKEN: 'ghp_contractprobeinvalid' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) } catch { /* auth/network failures are expected here */ }
-    }
-    const runAndCapture = (args) => {
-      try { probe(args); return '' } catch (e) { return `${e?.stderr ?? ''}${e?.stdout ?? ''}` }
-    }
-    if (t.GH_PR_LIST_FIELDS) {
-      const err = runAndCapture(['pr', 'list', '--repo', 'cli/cli', '--limit', '1', '--json', t.GH_PR_LIST_FIELDS])
-      assert('gh accepts our pr list field list', !/unknown json field/i.test(err), err.split('\n').slice(0, 2).join(' / '))
-    }
-    if (t.GH_PR_VIEW_FIELDS) {
-      const err = runAndCapture(['pr', 'view', '1', '--repo', 'cli/cli', '--json', t.GH_PR_VIEW_FIELDS])
-      assert('gh accepts our pr view field list', !/unknown json field/i.test(err), err.split('\n').slice(0, 2).join(' / '))
+    for (const [label, args, fields] of [
+      ['pr list', ['pr', 'list'], t.GH_PR_LIST_FIELDS],
+      ['pr view', ['pr', 'view', '1'], t.GH_PR_VIEW_FIELDS],
+      ['issue list', ['issue', 'list'], t.GH_ISSUE_FIELDS],
+    ]) {
+      let output = ''
+      try {
+        execFileSync('gh', [...args, '--repo', 'cli/cli', '--json', '__invalid_field_probe__'], {
+          env: { ...process.env, GH_TOKEN: 'offline-contract-probe' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
+        })
+      } catch (error) { output = `${error.stderr ?? ''}${error.stdout ?? ''}` }
+      const supported = new Set(output.split(/\r?\n/).map(line => line.trim()))
+      assert(`gh accepts our ${label} field list`, /unknown json field/i.test(output) && fields.split(',').every(field => supported.has(field)), output)
     }
     // Flat-field payloads are what gh actually returns; mapping must not need `{}` selectors.
     assert('no nested selectors left in field lists', !/[{}]/.test(`${t.GH_PR_LIST_FIELDS},${t.GH_PR_VIEW_FIELDS}`))
@@ -231,7 +232,7 @@ async function main() {
 
   // --- token masking must never echo a plaintext secret ---
   const masked = await post('/codehub/api?op=config.set', {
-    provider: 'auto', instances: [{ id: 'gh', name: 'GitHub', host: 'github.com', token: 'ghp_topsecret9999' }],
+    provider: 'git', instances: [{ id: 'gh', name: 'GitHub', host: 'github.com', token: 'ghp_topsecret9999' }],
     repos: [{ id: 'r1', instance: 'gh', path: 'cli/cli', enabled: true }],
   })
   assert('config.set masks new token', masked.data.config.instances[0].token === '****9999', masked.data.config.instances[0].token)
@@ -271,11 +272,10 @@ async function main() {
     // The runtime banner must report the same version the manifest ships.
     const live = await get('/codehub/api?op=boot')
     assert('api boot reports manifest version', live.data.version === pkg.version, `${live.data.version} vs ${pkg.version}`)
-    assert('client inject declares betterSidebar', JSON.stringify(pkg?.dsh?.client?.inject) === '["betterSidebar"]', JSON.stringify(pkg?.dsh?.client?.inject))
-    const sidebarRange = pkg?.peerDependencies?.['dsh-better-sidebar']
-    assert('dsh-better-sidebar peerDependency records the badge floor', /0\.12/.test(sidebarRange || ''), sidebarRange)
+    assert('client inject declares native services', JSON.stringify(pkg?.dsh?.client?.inject) === '["slots","layout","uiWorkspace"]', JSON.stringify(pkg?.dsh?.client?.inject))
+    assert('native host version floor matches lockfile', pkg.engines.dsh === '>=0.2.0-rc.2 <0.3.0' && JSON.parse(readFileSync(join(pluginDir, 'package-lock.json'), 'utf8')).packages[''].engines.dsh === pkg.engines.dsh)
     // Every file the loader needs must actually be published.
-    const needed = ['index.js', 'client.js', 'web', 'cordis.patch.yml', 'icon.svg']
+    const needed = ['index.js', 'workflows.js', 'client.js', 'web', 'cordis.patch.yml', 'icon.svg']
     assert('package.files covers every runtime asset', needed.every((f) => (pkg.files || []).includes(f)), JSON.stringify(pkg.files))
     assert('README documents the Windows chmod caveat', /Windows/.test(readFileSync(join(pluginDir, 'README.md'), 'utf8')))
   } catch (e) {

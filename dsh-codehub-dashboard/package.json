@@ -1,7 +1,7 @@
 {
   "name": "dsh-codehub-dashboard",
   "version": "0.1.0",
-  "description": "DSH plugin: GitHub PR / review-comment aggregation dashboard - a better-sidebar tab powered by gh CLI (https://cli.github.com/) that pulls merge requests and review comments across repositories, with statistics charts, a review inbox and multi-instance token configuration.",
+  "description": "DSH native CodeHub workspace: GitHub organization, PR and Issue dashboard with native AI review drafts and Issue development sessions.",
   "license": "MIT",
   "type": "module",
   "main": "index.js",
@@ -9,7 +9,6 @@
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
-    "dsh-better-sidebar",
     "codehub",
     "merge-request",
     "code-review",
@@ -17,6 +16,7 @@
   ],
   "files": [
     "index.js",
+    "workflows.js",
     "client.js",
     "web",
     "cordis.patch.yml",
@@ -25,8 +25,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node scripts/test-host.mjs",
-    "lint": "eslint ."
+    "test": "node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs && node scripts/test-host.mjs",
+    "lint": "eslint .",
+    "dev": "node scripts/dev.mjs"
   },
   "publishConfig": {
     "access": "public",
@@ -39,17 +40,13 @@
   },
   "engines": {
     "node": ">=18",
-    "dsh": ">=0.1.0-rc.6 <0.3.0"
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": ">=0.1.0-rc.6 <0.3.0",
-    "dsh-better-sidebar": ">=0.12.0"
+    "@deepseek-ai/dsh": ">=0.2.0-rc.2 <0.3.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {
-      "optional": true
-    },
-    "dsh-better-sidebar": {
       "optional": true
     }
   },
@@ -57,7 +54,9 @@
     "manifestVersion": 1,
     "client": {
       "inject": [
-        "betterSidebar"
+        "slots",
+        "layout",
+        "uiWorkspace"
       ],
       "platform": "web"
     },

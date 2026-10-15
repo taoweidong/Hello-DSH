@@ -26,6 +26,7 @@ import { mkdir, readFile, rename, writeFile, chmod, readdir, stat } from 'node:f
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createWorkflows } from './workflows.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const webRoot = join(here, 'web')
@@ -37,7 +38,7 @@ const FETCH_CONCURRENCY = 3
 const DAY_MS = 86_400_000
 
 export const name = 'codehub-dashboard'
-export const inject = ['webServer']
+export const inject = { required: ['webServer', 'connection'], optional: ['llm', 'sessions', 'sessionController'] }
 
 /* ===================== generic helpers ===================== */
 
@@ -67,13 +68,16 @@ async function mapLimit(items, limit, fn) {
 }
 
 function run(file, args, opts = {}) {
+  const { input, ...execOpts } = opts
   return new Promise((res) => {
-    execFile(file, args, {
-      maxBuffer: MAX_EXEC_BUFFER, windowsHide: true, timeout: EXEC_TIMEOUT_MS, encoding: 'utf8', ...opts,
+    const child = execFile(file, args, {
+      maxBuffer: MAX_EXEC_BUFFER, windowsHide: true, timeout: EXEC_TIMEOUT_MS, encoding: 'utf8', ...execOpts,
     }, (err, stdout, stderr) => {
       if (err && err.killed) { res({ stdout: '', stderr: `timeout after ${EXEC_TIMEOUT_MS}ms`, code: -1, error: err }); return }
       res({ stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, error: err ?? null })
     })
+    child.stdin?.on('error', () => {})
+    child.stdin?.end(input ?? '')
   })
 }
 
@@ -93,13 +97,15 @@ function defaultConfig() {
     ghPath: 'gh',          // path to gh executable
     instances: [],         // { id, name, host (e.g. github.com), token }
     repos: [],             // { id, instance, path:'owner/name', localPath?, enabled, defaultBranch? }
+    organizations: [],
+    ai: { provider: '', model: '' },
     http: { perPage: 100, detailLimit: 25, timeoutMs: 15000 },
   }
 }
 
 function createConfigStore(filePath, log) {
   let current = defaultConfig()
-  let rev = 0, loaded = false
+  let rev = 0, loaded = false, saving = Promise.resolve()
   const normalize = (cfg) => {
     const base = defaultConfig()
     const out = { ...base, ...cfg }
@@ -110,6 +116,11 @@ function createConfigStore(filePath, log) {
     // config back verbatim, so drop it here instead of persisting a stale flag.
     out.instances = out.instances.map(({ hasToken, ...rest }) => rest)
     out.repos = Array.isArray(cfg?.repos) ? cfg.repos : []
+    out.organizations = Array.isArray(cfg?.organizations) ? cfg.organizations : []
+    out.ai = { ...base.ai, ...(cfg?.ai ?? {}) }
+    out.http.perPage = Math.max(1, Math.min(100, Number(out.http.perPage) || 100))
+    out.http.detailLimit = Math.max(0, Math.min(50, Number(out.http.detailLimit) || 0))
+    out.http.timeoutMs = Math.max(1000, Math.min(60000, Number(out.http.timeoutMs) || 15000))
     out.pollMinutes = Math.max(1, Math.min(1440, Number(out.pollMinutes) || base.pollMinutes))
     // "git-meta" was the pre-0.1.1 UI value; map it so hand-edited or
     // legacy configs keep working instead of silently falling back to auto.
@@ -124,12 +135,12 @@ function createConfigStore(filePath, log) {
     catch (err) { if (err?.code !== 'ENOENT') log?.warn?.('[codehub] config load failed:', err?.message ?? err); current = defaultConfig() }
     loaded = true; return current
   }
-  const save = async () => {
+  const save = async (config) => {
     await mkdir(dirname(filePath), { recursive: true })
     // Unique tmp suffix: two concurrent saves writing the same `${filePath}.tmp`
     // can interleave writeFile/rename and leave a torn or wrong-content config.
     const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
-    await writeFile(tmp, JSON.stringify(current, null, 2), 'utf8')
+    await writeFile(tmp, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 })
     try { await chmod(tmp, 0o600) } catch {}
     await rename(tmp, filePath)
   }
@@ -138,12 +149,37 @@ function createConfigStore(filePath, log) {
     async init() { if (!loaded) await load(); return current },
     get() { return current },
     async set(patch) {
-      const prev = current; const next = normalize({ ...prev, ...(patch ?? {}) })
-      next.instances = next.instances.map((inst) => {
-        const old = prev.instances.find((i) => i.id === inst.id)
-        if (old && isMaskedToken(inst.token)) return { ...inst, token: old.token }; return inst
+      const operation = saving.catch(() => {}).then(async () => {
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw apiError('配置必须是对象')
+        for (const field of ['instances', 'repos', 'organizations']) {
+          if (patch[field] === undefined) continue
+          if (!Array.isArray(patch[field]) || patch[field].some(item => !item || typeof item !== 'object' || Array.isArray(item))) throw apiError(`${field} 必须是对象数组`)
+        }
+        const prev = current; const next = normalize({ ...prev, ...patch })
+        const ids = new Set()
+        for (const inst of next.instances) {
+          if (!inst?.id || ids.has(inst.id) || !isSafeHost(inst.host || 'github.com')) throw apiError('实例标识重复或域名不合法')
+          ids.add(inst.id)
+        }
+        for (const repo of next.repos) {
+          if (!isSafeRepoPath(repo?.path)) throw apiError('仓库路径必须是 owner/name')
+          if (repo.instance && repo.instance !== 'github.com' && !ids.has(repo.instance)) throw apiError('仓库引用了不存在的实例')
+          if (repo.localPath !== undefined && typeof repo.localPath !== 'string') throw apiError('本地路径必须是文本')
+        }
+        for (const org of next.organizations) {
+          if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(org?.owner || '')) throw apiError('组织名称不合法')
+          if (org.instance && org.instance !== 'github.com' && !ids.has(org.instance)) throw apiError('组织引用了不存在的实例')
+        }
+        next.instances = next.instances.map((inst) => {
+          const old = prev.instances.find(i => i.id === inst.id)
+          if (!isMaskedToken(inst.token)) return inst
+          if (!old || (old.host || 'github.com').toLowerCase() !== (inst.host || 'github.com').toLowerCase()) throw apiError('更换实例域名后必须清空或重新输入 token')
+          return { ...inst, token: old.token }
+        })
+        await save(next); current = next; rev++; return current
       })
-      current = next; rev++; await save(); return current
+      saving = operation
+      return operation
     },
     masked() {
       return { ...current, instances: current.instances.map((i) => ({ ...i, token: maskToken(i.token), hasToken: !!i.token })) }
@@ -154,11 +190,18 @@ function createConfigStore(filePath, log) {
 /* ===================== repo model ===================== */
 
 function effectiveRepos(cfg) {
-  return (cfg.repos ?? []).filter((r) => r && r.path && r.enabled !== false).map((r) => ({
-    key: `${r.instance || 'github.com'}:${r.path}`,
-    instanceId: r.instance || 'github.com',
-    path: r.path, localPath: r.localPath || '', defaultBranch: r.defaultBranch || '',
-  }))
+  return mergeRepos(cfg, [])
+}
+function mergeRepos(cfg, discovered) {
+  const repos = new Map()
+  for (const r of [...discovered, ...(cfg.repos ?? [])]) {
+    if (!r?.path) continue
+    const instanceId = r.instance || 'github.com'
+    const key = `${instanceId}:${r.path.toLowerCase()}`
+    if (r.enabled === false) { repos.delete(key); continue }
+    repos.set(key, { key: `${instanceId}:${r.path}`, instanceId, path: r.path, localPath: r.localPath || '', defaultBranch: r.defaultBranch || '' })
+  }
+  return [...repos.values()]
 }
 const repoName = (path) => String(path ?? '').split('/').pop() || String(path ?? '')
 const repoOwner = (path) => String(path ?? '').split('/')[0] || ''
@@ -183,7 +226,7 @@ function isSafeRepoPath(p) {
  * path or `@` must never reach it.
  */
 const SAFE_HOSTNAME = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/
-const isSafeHost = (h) => typeof h === 'string' && h.length <= 253 && SAFE_HOSTNAME.test(h)
+function isSafeHost(h) { return typeof h === 'string' && h.length <= 253 && SAFE_HOSTNAME.test(h) }
 
 /** REST root for an instance, or null when the configured host is unusable. */
 function apiBaseFor(host) {
@@ -215,11 +258,15 @@ async function ghProbe(cfg) {
 /** Build environment with optional per-instance GH_TOKEN override. */
 function ghEnv(cfg, instanceId) {
   const inst = (cfg.instances ?? []).find((i) => i.id === instanceId)
-  // Only a bare hostname may reach GH_HOST; anything else falls back to the
-  // default host instead of redirecting the token to an arbitrary origin.
-  const host = isSafeHost(inst?.host) ? inst.host : 'github.com'
-  if (inst?.token) return { ...process.env, GH_TOKEN: inst.token, GH_HOST: host }
-  return process.env
+  const host = inst?.host || 'github.com'
+  if (!isSafeHost(host)) throw Object.assign(new Error('实例 host 不合法'), { status: 400 })
+  const env = { ...process.env, GH_HOST: host, GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat' }
+  if (inst?.token) {
+    delete env.GH_TOKEN; delete env.GITHUB_TOKEN
+    delete env.GH_ENTERPRISE_TOKEN; delete env.GITHUB_ENTERPRISE_TOKEN
+    env[host === 'github.com' ? 'GH_TOKEN' : 'GH_ENTERPRISE_TOKEN'] = inst.token
+  }
+  return env
 }
 
 // gh --json accepts FLAT top-level field names only. Nested GraphQL-style
@@ -238,7 +285,25 @@ const GH_PR_COMMON_FIELDS = [
   'statusCheckRollup',
 ]
 const GH_PR_LIST_FIELDS = [...GH_PR_COMMON_FIELDS, 'latestReviews'].join(',')
-const GH_PR_VIEW_FIELDS = [...GH_PR_COMMON_FIELDS, 'reviews','comments'].join(',')
+const GH_PR_VIEW_FIELDS = [...GH_PR_COMMON_FIELDS, 'reviews','comments', 'body', 'headRefOid', 'baseRefOid'].join(',')
+const GH_ISSUE_FIELDS = 'number,title,body,state,author,assignees,labels,createdAt,updatedAt,closedAt,url'
+
+function parseGhPages(stdout) {
+  const pages = JSON.parse(stdout)
+  if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error('GitHub 分页响应格式不正确')
+  return pages.flat()
+}
+
+function mapGhIssue(raw) {
+  return {
+    number: Number(raw.number), title: String(raw.title ?? ''), body: String(raw.body ?? ''),
+    state: String(raw.state).toLowerCase() === 'closed' ? 'closed' : 'open', author: ghPerson(raw.author ?? raw.user),
+    assignees: (raw.assignees ?? []).map(p => p.login).filter(Boolean), labels: (raw.labels ?? []).map(l => typeof l === 'string' ? l : l.name).filter(Boolean),
+    createdAt: raw.createdAt ?? raw.created_at, updatedAt: raw.updatedAt ?? raw.updated_at,
+    closedAt: raw.closedAt ?? raw.closed_at ?? null, url: raw.url ?? raw.html_url ?? '',
+    comments: (Array.isArray(raw.comments) ? raw.comments : []).map(c => ({ id: String(c.id), body: String(c.body ?? ''), author: ghPerson(c.author ?? c.user), createdAt: c.createdAt ?? c.created_at })),
+  }
+}
 
 function ghPerson(o) {
   if (!o) return { name: 'unknown', login: 'unknown' }
@@ -298,7 +363,7 @@ function mapGhPr(raw) {
     file: c.path ?? null,
     line: c.line != null ? Number(c.line) : null,
     createdAt: isoOr(c.createdAt, raw.updatedAt),
-    resolved: false, // gh PR comments don't carry resolved state at list level
+    resolved: null, kind: 'conversation',
   }))
   // `statusCheckRollup` is requested on the list call itself, so CI state is
   // available for every PR — not only the ones that later get `pr view` detail.
@@ -313,6 +378,7 @@ function mapGhPr(raw) {
     changedFiles: Number(raw?.changedFiles) || 0, labels,
     ciState, reviewDecision: ['approved', 'changes_requested', 'pending', 'none'].includes(decision) ? decision : 'none',
     requestedReviewers, reviews, comments, url: String(raw?.url ?? ''),
+    body: String(raw?.body ?? ''), headSha: raw?.headRefOid ?? '', baseSha: raw?.baseRefOid ?? '',
   }
 }
 
@@ -337,74 +403,12 @@ async function ghSnapshot(repo, cfg) {
 
   const mrs = rawList.map(mapGhPr)
 
-  // Enrich open/recent PRs with full reviews + inline review comments via `gh pr view`
-  const detailed = mrs.filter((m) => m.state === 'open' || (m.mergedAt && Date.now() - new Date(m.mergedAt).getTime() < 30 * DAY_MS))
-    .slice(0, Math.max(5, cfg.http?.detailLimit ?? 25))
-
-  await mapLimit(detailed, FETCH_CONCURRENCY, async (mr) => {
-    try {
-      const viewRes = await run(exe, [
-        'pr', 'view', String(mr.number), '--repo', repo.path,
-        '--json', GH_PR_VIEW_FIELDS,
-      ], { env })
-      if (viewRes.code !== 0) return
-      let detail
-      try { detail = JSON.parse(viewRes.stdout) } catch { return }
-      // Merge richer reviews
-      if (Array.isArray(detail.reviews) && detail.reviews.length) {
-        mr.reviews = detail.reviews.map((r) => ({
-          id: `rv-${mr.number}-${r.author?.login || '?'}`,
-          author: ghPerson(r.author),
-          state: String(r.state ?? '').toLowerCase() === 'approved' ? 'approved'
-            : String(r.state ?? '').toLowerCase() === 'changes_requested' ? 'changes_requested' : 'commented',
-          submittedAt: isoOr(r.submittedAt, mr.updatedAt),
-          body: String(r.body ?? ''),
-        })).filter((r) => r.state !== 'pending')
-      }
-      // `comments` on a PR is the *conversation* stream (issue comments); it has
-      // no path/line. Keep it, but do not present it as inline review feedback.
-      if (Array.isArray(detail.comments) && detail.comments.length) {
-        for (let i = 0; i < detail.comments.length; i++) {
-          const c = detail.comments[i]
-          mr.comments.push({
-            id: `rc-${mr.number}-v-${i}`, author: ghPerson(c.author), body: String(c.body ?? ''),
-            file: c.path ?? null, line: c.line != null ? Number(c.line) : null,
-            createdAt: isoOr(c.createdAt, mr.updatedAt), resolved: false, kind: 'conversation',
-          })
-        }
-      }
-      // CI status from statusCheckRollup if available
-      const detailCi = ghCiState(detail.statusCheckRollup)
-      if (detailCi !== 'none') mr.ciState = detailCi
-    } catch { /* enrichment failure is non-fatal */ }
-
-    // Real inline review comments (path + line) are only exposed by the REST
-    // endpoint, not by `gh pr view --json`. `gh api` reuses the same auth as the
-    // rest of this provider, so no extra token configuration is required.
-    try {
-      const apiRes = await run(exe, [
-        'api', '--paginate', `repos/${repo.path}/pulls/${mr.number}/comments`,
-      ], { env })
-      if (apiRes.code !== 0) return
-      const inline = JSON.parse(apiRes.stdout)
-      if (!Array.isArray(inline)) return
-      const seen = new Set(mr.comments.map((c) => c.id))
-      for (const c of inline) {
-        const id = `rc-${mr.number}-a-${c.id ?? ''}`
-        if (seen.has(id)) continue
-        seen.add(id)
-        mr.comments.push({
-          id,
-          author: { name: c.user?.login || 'unknown', login: c.user?.login || 'unknown' },
-          body: String(c.body ?? ''),
-          file: c.path ?? null,
-          line: c.line != null ? Number(c.line) : (c.original_line != null ? Number(c.original_line) : null),
-          createdAt: isoOr(c.created_at, mr.updatedAt),
-          resolved: false, kind: 'inline',
-        })
-      }
-    } catch { /* inline-comment failure is non-fatal */ }
-  })
+  let issues = [], issueError = null
+  const issueRes = await run(exe, ['issue', 'list', '--repo', repo.path, '--state', 'all', '--limit', '200', '--json', GH_ISSUE_FIELDS], { env })
+  try {
+    if (issueRes.code !== 0) throw new Error(issueRes.stderr || 'Issue 拉取失败')
+    issues = JSON.parse(issueRes.stdout).map(mapGhIssue)
+  } catch (err) { issueError = clip(err.message, 300) }
 
   mrs.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
   return {
@@ -414,8 +418,90 @@ async function ghSnapshot(repo, cfg) {
       defaultBranch: mrs.find((m) => m.targetBranch)?.targetBranch || repo.defaultBranch || 'main',
       description: `GitHub 仓库 ${repo.path}`, demo: false,
     },
-    mrs,
+    mrs, issues, issueError, coverage: { limited: mrs.length >= 200 || issues.length >= 200, details: 'on-demand' },
   }
+}
+
+function apiError(message, status = 400) { return Object.assign(new Error(message), { status }) }
+
+async function githubRequest(repo, cfg, endpoint, { paginate = false, method = 'GET', body, text = false } = {}) {
+  if (!isSafeRepoPath(repo.path)) throw apiError('仓库路径不合法')
+  const inst = instanceOf(cfg, repo.instanceId)
+  const env = ghEnv(cfg, repo.instanceId)
+  if (cfg.provider === 'git') throw apiError('Git 元信息模式不能获取 PR / Issue，请选择 gh 或 HTTP', 503)
+  let cliError
+  if (cfg.provider !== 'http') {
+    const args = ['api', '--hostname', env.GH_HOST, endpoint, '--method', method]
+    if (paginate) args.push('--paginate', '--slurp')
+    if (text) args.push('-H', 'Accept: application/vnd.github.diff')
+    if (body !== undefined) args.push('--input', '-')
+    const result = await run(ghExecutable(cfg), args, { env, input: body === undefined ? undefined : JSON.stringify(body) })
+    if (result.code === 0) return text ? result.stdout : paginate ? parseGhPages(result.stdout) : JSON.parse(result.stdout)
+    cliError = clip(result.stderr || 'gh api 失败', 400)
+    // A failed write may already have reached GitHub. Never retry it via another transport.
+    if (method !== 'GET' || !inst?.token) throw apiError(cliError, 502)
+  }
+  if (!inst?.token) throw apiError(cliError || 'HTTP 模式需要实例 token', 503)
+  const base = apiBaseFor(env.GH_HOST)
+  if (!base) throw apiError('实例 host 不合法')
+  const rows = []
+  for (let page = 1; page <= 100; page++) {
+    const path = paginate ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}per_page=100&page=${page}` : endpoint
+    const response = await fetch(`${base}/${path}`, {
+      method, redirect: 'error', signal: AbortSignal.timeout(cfg.http?.timeoutMs || 15000),
+      headers: { accept: text ? 'application/vnd.github.diff' : 'application/vnd.github+json', authorization: `Bearer ${inst.token}`, 'content-type': 'application/json', 'user-agent': `dsh-codehub-dashboard/${PLUGIN_VERSION}` },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    if (!response.ok) throw apiError(`GitHub HTTP ${response.status}`, response.status === 404 ? 404 : 502)
+    if (text) return response.text()
+    const value = await response.json()
+    if (!paginate) return value
+    if (!Array.isArray(value)) throw apiError('GitHub 返回的列表格式不正确', 502)
+    rows.push(...value)
+    if (!/rel="next"/.test(response.headers.get('link') || '')) return rows
+  }
+  throw apiError('分页超过 100 页，请缩小组织范围', 422)
+}
+
+async function pullDetail(repo, cfg, number, { diff = false } = {}) {
+  const endpoint = `repos/${repo.path}/pulls/${number}`
+  const raw = await githubRequest(repo, cfg, endpoint)
+  const mr = mapGithubPr(raw)
+  mr.headSha = raw.head?.sha || ''; mr.baseSha = raw.base?.sha || ''; mr.body = String(raw.body || '')
+  const detailErrors = []
+  const readList = async (path) => {
+    try { return await githubRequest(repo, cfg, path, { paginate: true }) }
+    catch (err) { detailErrors.push(err.message); return [] }
+  }
+  const [reviews, inline, conversation] = await Promise.all([
+    readList(`${endpoint}/reviews`), readList(`${endpoint}/comments`), readList(`repos/${repo.path}/issues/${number}/comments`),
+  ])
+  mr.reviews = reviews.filter(r => r.state !== 'PENDING').map(r => ({ id: String(r.id), author: ghPerson(r.user), state: String(r.state).toLowerCase(), body: String(r.body || ''), submittedAt: r.submitted_at }))
+  mr.comments = [...inline.map(c => ({ ...c, kind: 'inline' })), ...conversation.map(c => ({ ...c, kind: 'conversation' }))].map(c => ({ id: `${c.kind}-${c.id}`, author: ghPerson(c.user), body: String(c.body || ''), file: c.path ?? null, line: c.line ?? null, createdAt: c.created_at, kind: c.kind, resolved: null }))
+  let diffText = '', files = [], diffTruncated = false
+  if (diff) {
+    const results = await Promise.all([githubRequest(repo, cfg, endpoint, { text: true }), githubRequest(repo, cfg, `${endpoint}/files`, { paginate: true })])
+    diffTruncated = results[0].length > 120000
+    diffText = results[0].slice(0, 120000)
+    files = results[1].map(f => ({ path: f.filename, status: f.status, additions: f.additions, deletions: f.deletions }))
+    const check = await githubRequest(repo, cfg, endpoint)
+    if (check.head?.sha !== mr.headSha || check.base?.sha !== mr.baseSha) throw apiError('PR 在读取期间发生变化，请重新加载', 409)
+  }
+  return { mr, repo, source: cfg.provider === 'http' ? 'http' : 'gh', detailErrors, diff: diffText, files, diffTruncated }
+}
+
+async function issueDetail(repo, cfg, number) {
+  const raw = await githubRequest(repo, cfg, `repos/${repo.path}/issues/${number}`)
+  if (raw.pull_request) throw apiError('该编号是 PR，不是 Issue', 400)
+  const comments = await githubRequest(repo, cfg, `repos/${repo.path}/issues/${number}/comments`, { paginate: true })
+  return { issue: mapGhIssue({ ...raw, url: raw.html_url, comments }), repo }
+}
+
+async function organizationRepos(org, cfg) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(org.owner || '')) throw apiError('组织名不合法')
+  const repo = { path: `${org.owner}/discovery`, instanceId: org.instance || 'github.com' }
+  const rows = await githubRequest(repo, cfg, `orgs/${org.owner}/repos?type=all&sort=updated`, { paginate: true })
+  return rows.filter(r => !r.archived && !r.disabled && isSafeRepoPath(r.full_name)).map(r => ({ instance: repo.instanceId, path: r.full_name, defaultBranch: r.default_branch }))
 }
 
 /* ===================== git provider (supplementary metadata) ===================== */
@@ -467,6 +553,7 @@ function instanceOf(cfg, id) {
 
 async function httpJson(url, token, timeoutMs) {
   const res = await fetch(url, {
+    redirect: 'error',
     headers: { accept: 'application/vnd.github+json', 'user-agent': `dsh-codehub-dashboard/${PLUGIN_VERSION}`, ...(token ? { authorization: `Bearer ${token}` } : {}) },
     signal: AbortSignal.timeout(timeoutMs),
   })
@@ -505,37 +592,11 @@ async function httpSnapshot(repo, cfg) {
   if (!Array.isArray(pulls)) throw new Error('pulls 响应不是数组')
   const mrs = pulls.map(mapGithubPr)
 
-  const detailed = mrs.slice(0, Math.max(5, Number(cfg.http?.detailLimit ?? 25)))
-  await mapLimit(detailed, FETCH_CONCURRENCY, async (mr) => {
-    try {
-      const [reviews, comments] = await Promise.all([
-        httpJson(`${apiBase}/repos/${repo.path}/pulls/${mr.number}/reviews?per_page=100`, inst.token, timeoutMs).catch(() => []),
-        httpJson(`${apiBase}/repos/${repo.path}/pulls/${mr.number}/comments?per_page=100`, inst.token, timeoutMs).catch(() => []),
-      ])
-      if (Array.isArray(reviews)) {
-        mr.reviews = reviews.map((r) => ({
-          id: String(r.id), author: { name: r.user?.login || 'unknown', login: r.user?.login || 'unknown' },
-          state: String(r.state ?? '').toLowerCase() === 'approved' ? 'approved'
-            : String(r.state ?? '').toLowerCase() === 'changes_requested' ? 'changes_requested' : 'commented',
-          submittedAt: isoOr(r.submitted_at, mr.updatedAt), body: String(r.body ?? ''),
-        })).filter((r) => r.state !== 'pending')
-      }
-      if (Array.isArray(comments)) {
-        mr.comments = comments.map((c) => ({
-          id: String(c.id), author: { name: c.user?.login || 'unknown', login: c.user?.login || 'unknown' },
-          body: String(c.body ?? ''), file: c.path ?? null, line: c.line ?? c.position ?? null,
-          createdAt: isoOr(c.created_at, mr.updatedAt), resolved: false,
-        }))
-      }
-      const byReviewer = new Map()
-      for (const rv of mr.reviews) byReviewer.set(rv.author.login, rv.state)
-      const states = [...byReviewer.values()]
-      if (states.includes('changes_requested')) mr.reviewDecision = 'changes_requested'
-      else if (states.includes('approved')) mr.reviewDecision = 'approved'
-      else if (states.length) mr.reviewDecision = 'pending'
-      else if (mr.requestedReviewers.length && mr.state === 'open') mr.reviewDecision = 'pending'
-    } catch (err) { mr.detailError = clip(err?.message ?? String(err), 200) }
-  })
+  let issues = [], issueError = null
+  try {
+    const rows = await httpJson(`${apiBase}/repos/${repo.path}/issues?state=all&per_page=100&sort=updated&direction=desc`, inst.token, timeoutMs)
+    issues = rows.filter(i => !i.pull_request).map(i => mapGhIssue({ ...i, url: i.html_url }))
+  } catch (err) { issueError = clip(err.message, 300) }
 
   mrs.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
   return {
@@ -545,7 +606,7 @@ async function httpSnapshot(repo, cfg) {
       defaultBranch: mrs.find((m) => m.targetBranch)?.targetBranch || repo.defaultBranch || 'main',
       description: `GitHub 仓库 ${repo.path}（REST API）`, demo: false, instanceId: inst.id,
     },
-    mrs,
+    mrs, issues, issueError, coverage: { limited: true, details: 'on-demand' },
   }
 }
 
@@ -567,6 +628,24 @@ function createFetcher(store, log) {
   const cache = new Map()
   let ghOkCache = { at: 0, ok: false, loggedIn: false }
   let inflight = null
+  let repoCache = { rev: -1, at: 0, repos: [], errors: [] }
+
+  const resolveRepos = async (force = false) => {
+    const cfg = store.get(), rev = store.rev
+    const ttl = Math.max(1, Number(cfg.pollMinutes) || 10) * 60000
+    if (!force && repoCache.rev === rev && Date.now() - repoCache.at < ttl) return repoCache
+    const discovered = [], errors = []
+    await mapLimit((cfg.organizations ?? []).filter(o => o.enabled !== false), FETCH_CONCURRENCY, async org => {
+      try { discovered.push(...await organizationRepos(org, cfg)) }
+      catch (err) {
+        errors.push({ owner: org.owner, error: err.message })
+        if (repoCache.rev === rev) discovered.push(...repoCache.repos.filter(r => r.instanceId === (org.instance || 'github.com') && repoOwner(r.path).toLowerCase() === String(org.owner).toLowerCase()).map(r => ({ ...r, instance: r.instanceId })))
+      }
+    })
+    const result = { rev, at: Date.now(), repos: mergeRepos(cfg, discovered), errors }
+    if (store.rev === rev) repoCache = result
+    return result
+  }
 
   const ghAvailable = async (cfg) => {
     if (cfg.provider === 'http') return false
@@ -578,8 +657,7 @@ function createFetcher(store, log) {
     return ghOkCache.ok
   }
 
-  const fetchOne = async (repo, cfg, ghOk, force) => {
-    const rev = store.rev
+  const fetchOne = async (repo, cfg, ghOk, force, rev = store.rev) => {
     const hit = cache.get(repo.key)
     const ttl = Math.max(1, Number(cfg.pollMinutes) || 10) * 60_000
     if (!force && hit && hit.rev === rev && Date.now() - hit.at < ttl) return hit.snapshot
@@ -616,30 +694,53 @@ function createFetcher(store, log) {
       try { snapshot = await gitEnrich(repo, snapshot) } catch {}
     }
 
-    cache.set(repo.key, { snapshot, at: Date.now(), rev })
+    if (snapshot.error && hit?.rev === rev && (hit.snapshot.mrs?.length || hit.snapshot.issues?.length)) {
+      snapshot = { ...hit.snapshot, error: snapshot.error, stale: true }
+    } else if (!snapshot.error && hit?.rev === rev) {
+      snapshot.mrs = snapshot.mrs.map(mr => {
+        const prior = hit.snapshot.mrs?.find(m => m.number === mr.number && new Date(m.updatedAt).getTime() === new Date(mr.updatedAt).getTime())
+        return prior?.detailLoaded ? { ...mr, reviews: prior.reviews, comments: prior.comments, detailLoaded: true } : mr
+      })
+      if (snapshot.issueError && hit.snapshot.issues?.length) { snapshot.issues = hit.snapshot.issues; snapshot.stale = true }
+    }
+    if (store.rev === rev) cache.set(repo.key, { snapshot, at: Date.now(), rev })
     return snapshot
   }
 
   const refreshAll = async (force) => {
-    if (inflight) return inflight
-    inflight = (async () => {
-      try {
-        const cfg = store.get()
-        const repos = effectiveRepos(cfg)
-        const ghOk = await ghAvailable(cfg)
-        return (await mapLimit(repos, FETCH_CONCURRENCY, (repo) => fetchOne(repo, cfg, ghOk, force))).filter(Boolean)
-      } finally { inflight = null }
+    const rev = store.rev
+    if (inflight?.rev === rev) return inflight.promise
+    const promise = (async () => {
+      const cfg = store.get()
+      const resolved = await resolveRepos(force)
+      const ghOk = await ghAvailable(cfg)
+      const result = (await mapLimit(resolved.repos, FETCH_CONCURRENCY, repo => fetchOne(repo, cfg, ghOk, force, rev))).filter(Boolean)
+      for (const org of resolved.errors) result.push({ repoKey: `organization:${org.owner}`, repo: { name: org.owner, path: org.owner }, source: 'error', error: `组织仓库发现失败：${org.error}`, mrs: [], issues: [] })
+      return result
     })()
-    return inflight
+    inflight = { rev, promise }
+    try { return await promise } finally { if (inflight?.promise === promise) inflight = null }
   }
 
   const cached = () => {
-    const cfg = store.get(); const repos = effectiveRepos(cfg); const out = []
+    const repos = repoCache.rev === store.rev ? repoCache.repos : effectiveRepos(store.get())
+    const out = []
     for (const repo of repos) { const hit = cache.get(repo.key); if (hit && hit.rev === store.rev) out.push(hit.snapshot) }
+    if (repoCache.rev === store.rev) for (const org of repoCache.errors) out.push({ repoKey: `organization:${org.owner}`, repo: { name: org.owner, path: org.owner }, source: 'error', error: `组织仓库发现失败：${org.error}`, mrs: [], issues: [] })
     return out
   }
+  const rememberDetail = (repoKey, mr, rev) => {
+    const hit = cache.get(repoKey)
+    if (!hit || hit.rev !== rev || store.rev !== rev) return
+    const index = hit.snapshot.mrs.findIndex(m => m.number === mr.number)
+    if (index < 0) return
+    const prior = hit.snapshot.mrs[index]
+    // REST details do not return the list's check rollup or review decision.
+    hit.snapshot.mrs[index] = { ...prior, ...mr, ciState: prior.ciState, reviewDecision: prior.reviewDecision, detailLoaded: true }
+    return hit.snapshot.mrs[index]
+  }
 
-  return { refreshAll, cached, fetchOne, ghAvailable, ghProbe, invalidate: () => { cache.clear(); ghOkCache = { at: 0, ok: false, loggedIn: false } } }
+  return { refreshAll, cached, fetchOne, resolveRepos, rememberDetail, ghAvailable, ghProbe, invalidate: () => { cache.clear(); repoCache = { rev: -1, at: 0, repos: [], errors: [] }; ghOkCache = { at: 0, ok: false, loggedIn: false } } }
 }
 
 /* ===================== aggregation ===================== */
@@ -656,13 +757,13 @@ function computeNeedsMyReview(mr, meLogin) {
 
 function commentNeedsReply(mr, c, meLogin) {
   if (!meLogin) return false
-  if (c.resolved) return false
+  if (c.resolved !== false) return false
   if (c.author?.login === meLogin) return false
   return mr.author?.login === meLogin || mr.reviewDecision === 'changes_requested'
 }
 
 function decorate(mr, meLogin) {
-  const unresolved = (mr.comments ?? []).filter((c) => !c.resolved)
+  const unresolved = (mr.comments ?? []).filter((c) => c.resolved === false)
   return {
     ...mr, needsMyReview: computeNeedsMyReview(mr, meLogin),
     commentCount: (mr.comments ?? []).length, unresolvedCount: unresolved.length,
@@ -705,13 +806,13 @@ function buildOverview(snapshots, cfg) {
       for (const c of mr.comments ?? []) {
         const key = c.author?.login || 'unknown'
         if (!reviewerAgg.has(key)) reviewerAgg.set(key, { login: key, name: c.author?.name || key, reviews: 0, approvals: 0, changesRequested: 0, comments: 0, unresolved: 0 })
-        const agg = reviewerAgg.get(key); agg.comments++; if (!c.resolved) { agg.unresolved++; unresolved++ }
+        const agg = reviewerAgg.get(key); agg.comments++; if (c.resolved === false) { agg.unresolved++; unresolved++ }
         const ct = new Date(c.createdAt).getTime(); if (ct >= now - 30 * DAY_MS) dayBucket(ct).comments++
         allComments.push({
           id: c.id, repoKey: snap.repoKey, repoPath: snap.repo?.path, repoName: snap.repo?.name,
           mrNumber: mr.number, mrTitle: mr.title, mrState: mr.state, mrUrl: mr.url || '',
           author: c.author, body: c.body, file: c.file, line: c.line, createdAt: c.createdAt,
-          resolved: !!c.resolved, needsReply: commentNeedsReply(mr, c, meLogin), kind: 'comment',
+          resolved: c.resolved ?? null, needsReply: commentNeedsReply(mr, c, meLogin), kind: c.kind || 'comment',
         })
         events.push({ type: 'comment', at: c.createdAt, repoKey: snap.repoKey, repoName: snap.repo?.name, mrNumber: mr.number, title: mr.title, actor: c.author?.name ?? c.author?.login })
       }
@@ -720,9 +821,12 @@ function buildOverview(snapshots, cfg) {
     repos.push({
       key: snap.repoKey, name: snap.repo?.name, owner: snap.repo?.owner, path: snap.repo?.path,
       description: snap.repo?.description ?? '', defaultBranch: snap.repo?.defaultBranch ?? '',
-      source: snap.source, degradedNote: snap.degradedNote ?? null, error: snap.error ?? null,
+      source: snap.source, degradedNote: snap.degradedNote ?? null, error: snap.error || snap.issueError || null, stale: !!snap.stale,
       fetchedAt: snap.fetchedAt, demo: false, localPath: snap.repo?.localPath ?? '', url: snap.repo?.remoteUrl ?? '',
-      counts: { open, merged, closed, needsReview, unresolved, failingCi: failing, drafts, mergedWeek, total: mrs.length },
+      counts: { open, merged, closed, needsReview, unresolved, failingCi: failing, drafts, mergedWeek, total: mrs.length,
+        openIssues: (snap.issues ?? []).filter(i => i.state === 'open').length,
+        closedIssues: (snap.issues ?? []).filter(i => i.state === 'closed').length,
+      }, 
       lastActivity: lastActivity ? new Date(lastActivity).toISOString() : null,
     })
   }
@@ -735,14 +839,22 @@ function buildOverview(snapshots, cfg) {
     repos: repos.length, errors: repos.filter((r) => r.error || r.source === 'error').length,
     openMrs: statusDist.open, mergedMrs: statusDist.merged, closedMrs: statusDist.closed,
     needsReview: allMrs.filter((m) => m.needsMyReview).length, drafts: repos.reduce((s, r) => s + r.counts.drafts, 0),
-    unresolvedComments: allComments.filter((c) => !c.resolved).length,
+    unresolvedComments: allComments.filter((c) => c.resolved === false).length,
+    unknownResolutionComments: allComments.filter(c => c.resolved == null).length,
+    openIssues: repos.reduce((s, r) => s + r.counts.openIssues, 0),
+    closedIssues: repos.reduce((s, r) => s + r.counts.closedIssues, 0),
+    assignedIssues: snapshots.reduce((s, r) => s + (r.issues ?? []).filter(i => i.state === 'open' && !!meLogin && i.assignees.includes(meLogin)).length, 0),
     needsReply: allComments.filter((c) => c.needsReply).length,
     failingCi: repos.reduce((s, r) => s + r.counts.failingCi, 0),
     mergedThisWeek: repos.reduce((s, r) => s + r.counts.mergedWeek, 0),
     totalComments: allComments.length,
     me: meLogin ? { login: meLogin, name: cfg.me?.name || meLogin } : null,
   }
-  return { summary, repos, statusDist, activity, topReviewers, recent: events.slice(0, 24), generatedAt: new Date().toISOString() }
+  const coverage = {
+    limited: snapshots.some(s => s.coverage?.limited || s.error || s.issueError || s.stale),
+    note: '统计基于已同步样本：gh 每仓库最多 200 条 PR / Issue，HTTP 为首批结果；意见按需加载，未获取的线程解决状态不计为未解决。不是完整历史统计。',
+  }
+  return { summary, repos, statusDist, activity, topReviewers, coverage, recent: events.slice(0, 24), generatedAt: new Date().toISOString() }
 }
 
 function filterMrs(allMrs, params) {
@@ -877,6 +989,58 @@ export function apply(ctx, loaderConfig = {}) {
   }
   const snapshots = async (force = false) => { await ensureBoot(); const list = await fetcher.refreshAll(force); lastRefreshAt = Date.now(); return list }
   const overviewFrom = (snaps, cfg) => buildOverview(snaps, cfg)
+  const resolveRepo = async (repoKey, number) => {
+    if (!Number.isSafeInteger(number) || number <= 0) throw apiError('PR / Issue 编号必须是正整数')
+    const explicit = effectiveRepos(store.get()).find(r => r.key === repoKey)
+    const repo = explicit || (await fetcher.resolveRepos()).repos.find(r => r.key === repoKey)
+    if (!repo) throw apiError('仓库未配置或已禁用', 404)
+    return repo
+  }
+  const getPullRequest = async (repoKey, number, options) => {
+    const rev = store.rev, cfg = store.get()
+    const repo = await resolveRepo(repoKey, number)
+    const detail = await pullDetail(repo, cfg, number, options)
+    detail.mr = fetcher.rememberDetail(repoKey, detail.mr, rev) ?? detail.mr
+    return detail
+  }
+  const getIssue = async (repoKey, number) => issueDetail(await resolveRepo(repoKey, number), store.get(), number)
+  const verifyLocalRepo = async (repo) => {
+    if (!repo.localPath) throw apiError('请在仓库设置中绑定本地克隆路径')
+    const path = resolve(repo.localPath)
+    if (!(await isGitRepo(path))) throw apiError('绑定路径不是 Git 工作区')
+    const remote = await git(['remote', 'get-url', 'origin'], path)
+    const expectedHost = ghEnv(store.get(), repo.instanceId).GH_HOST
+    const url = remote.stdout.trim()
+    let remoteHost = ''
+    try { remoteHost = new URL(url).hostname } catch { remoteHost = url.match(/^(?:[^@]+@)?([^:]+):/)?.[1] || '' }
+    if (remote.code !== 0 || parseRemotePath(url)?.toLowerCase() !== repo.path.toLowerCase() || remoteHost.toLowerCase() !== expectedHost.toLowerCase()) throw apiError('本地 origin 与所选 GitHub 仓库不一致')
+    return path
+  }
+  const workflows = createWorkflows({ ctx, store, filePath: `${configPath}.workflows.json`, getPullRequest, getIssue, verifyLocalRepo,
+    publishReview: async ({ repoKey, number, headSha, body }) => {
+      const revision = store.rev, config = store.get()
+      const repo = await resolveRepo(repoKey, number)
+      if (store.rev !== revision) throw apiError('发布前配置已变更，请重新核对目标仓库', 409)
+      return githubRequest(repo, config, `repos/${repo.path}/pulls/${number}/reviews`, { method: 'POST', body: { commit_id: headSha, event: 'COMMENT', body } })
+    },
+  })
+  let reviewLoad = null
+  const reviewSnapshots = async () => {
+    if (reviewLoad) return reviewLoad
+    const rev = store.rev
+    const pending = (async () => {
+      const list = await snapshots()
+      const targets = list.flatMap(s => (s.mrs ?? []).filter(m => !m.detailLoaded).slice(0, store.get().http.detailLimit).map(m => ({ repoKey: s.repoKey, number: m.number })))
+      const errors = []
+      await mapLimit(targets, FETCH_CONCURRENCY, async target => {
+        try { const detail = await getPullRequest(target.repoKey, target.number); errors.push(...detail.detailErrors) }
+        catch (err) { errors.push(err.message) }
+      })
+      return { snapshots: rev === store.rev ? fetcher.cached() : [], errors }
+    })()
+    reviewLoad = pending
+    try { return await pending } finally { if (reviewLoad === pending) reviewLoad = null }
+  }
 
   ctx.effect(() => {
     const disposeRoute = ctx.webServer.register({
@@ -884,6 +1048,9 @@ export function apply(ctx, loaderConfig = {}) {
       handler: async (req, res) => {
         const sendJson = (obj, status = 200) => { const body = JSON.stringify(obj); res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(body) }
         try {
+          if (typeof ctx.connection?.admit !== 'function') { sendJson({ ok: false, error: 'DSH 原生鉴权服务不可用' }, 503); return }
+          const admission = ctx.connection.admit(req)
+          if ('rejection' in admission) { sendJson({ ok: false, error: admission.rejection === 401 ? 'DSH 登录已失效，请从宿主重新打开' : '请求未通过 DSH 信任校验' }, admission.rejection); return }
           await ensureBoot()
           const url = new URL(req.url, 'http://localhost'); const pathname = url.pathname; const q = url.searchParams
           if (pathname === '/codehub' || pathname === '/codehub/' || pathname === '/codehub/index.html') {
@@ -904,10 +1071,25 @@ export function apply(ctx, loaderConfig = {}) {
           if (pathname !== '/codehub/api') { sendJson({ ok: false, error: 'not-found' }, 404); return }
 
           const op = q.get('op') || 'boot'; const cfg = store.get()
+          const writes = ['config.set', 'config.test', 'review.create', 'review.publish', 'issue.develop']
+          if (writes.includes(op)) {
+            if (req.method !== 'POST') { sendJson({ ok: false, error: 'POST required' }, 405); return }
+            const origin = req.headers.origin
+            let foreignOrigin = false
+            if (origin) { try { foreignOrigin = new URL(origin).host !== req.headers.host } catch { foreignOrigin = true } }
+            if (foreignOrigin || req.headers['sec-fetch-site'] === 'cross-site') { sendJson({ ok: false, error: '跨站请求已拒绝' }, 403); return }
+            if (!String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) { sendJson({ ok: false, error: 'application/json required' }, 415); return }
+          } else if (req.method !== 'GET') { sendJson({ ok: false, error: 'GET required' }, 405); return }
+          const payload = async () => {
+            let value
+            try { value = JSON.parse(await readBody(req) || '{}') } catch { throw apiError('invalid json') }
+            if (!value || typeof value !== 'object' || Array.isArray(value)) throw apiError('请求内容必须是对象')
+            return value
+          }
 
           if (op === 'boot') {
             const snaps = fetcher.cached(); const overview = snaps.length ? overviewFrom(snaps, cfg) : null
-            sendJson({ ok: true, version: PLUGIN_VERSION, config: store.masked(), configPath, summary: overview?.summary ?? null, hasData: !!overview, generatedAt: overview?.generatedAt ?? null }); return
+            sendJson({ ok: true, version: PLUGIN_VERSION, config: store.masked(), configPath, capabilities: workflows.capabilities(), summary: overview?.summary ?? null, hasData: !!overview, generatedAt: overview?.generatedAt ?? null }); return
           }
           if (op === 'summary') {
             const snaps = fetcher.cached(); const overview = overviewFrom(snaps, cfg)
@@ -923,31 +1105,43 @@ export function apply(ctx, loaderConfig = {}) {
             const filtered = filterMrs(all, { repoKey: q.get('repoKey') || '', state: q.get('state') || 'all', q: q.get('q') || '', needsReview: q.get('needsReview') === '1', unresolved: q.get('unresolved') === '1', author: q.get('author') || '', sort: q.get('sort') || 'updated', limit: q.get('limit') || 200, ci: q.get('ci') || '' })
             sendJson({ ok: true, ...filtered }); return
           }
-          if (op === 'mr') {
-            const repoKey = q.get('repoKey') || ''; const number = Number(q.get('number') || 0); const snaps = await snapshots(); const meLogin = (cfg.me?.login || '').trim()
-            for (const snap of snaps) { if (snap.repoKey !== repoKey) continue; const mr = (snap.mrs ?? []).find((m) => m.number === number)
-              if (mr) { const d = decorate(mr, meLogin); d.comments = (mr.comments ?? []).map((c) => ({ ...c, needsReply: commentNeedsReply(mr, c, meLogin) })); sendJson({ ok: true, mr: d, repo: snap.repo, source: snap.source }); return } }
-            sendJson({ ok: false, error: 'mr-not-found' }, 404); return
+          if (op === 'mr' || op === 'mr.diff') {
+            const detail = await getPullRequest(q.get('repoKey') || '', Number(q.get('number')), { diff: op === 'mr.diff' })
+            sendJson({ ok: true, ...detail, mr: decorate(detail.mr, (cfg.me?.login || '').trim()) }); return
           }
+          if (op === 'issues') {
+            const snaps = await snapshots(), repoKey = q.get('repoKey'), status = q.get('state') || 'all'
+            const search = (q.get('q') || '').toLowerCase(), assignee = q.get('assignee')
+            let issues = snaps.flatMap(s => (s.issues ?? []).map(i => ({ ...i, repoKey: s.repoKey, repoPath: s.repo.path })))
+            issues = issues.filter(i => (!repoKey || i.repoKey === repoKey) && (status === 'all' || i.state === status) && (!assignee || i.assignees.includes(assignee)) && (!search || `${i.number} ${i.title} ${i.author.login} ${i.labels.join(' ')}`.toLowerCase().includes(search)))
+            issues.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+            sendJson({ ok: true, issues: issues.slice(0, 500), total: issues.length, errors: snaps.filter(s => s.issueError || s.error).map(s => ({ repoKey: s.repoKey, error: s.issueError || s.error })) }); return
+          }
+          if (op === 'issue') { sendJson({ ok: true, ...await getIssue(q.get('repoKey') || '', Number(q.get('number'))) }); return }
+          if (op === 'models') { sendJson({ ok: true, ...await workflows.models() }); return }
+          if (op === 'review.create') { sendJson({ ok: true, draft: await workflows.createReview(await payload()) }); return }
+          if (op === 'review.get') { sendJson({ ok: true, draft: await workflows.getReview(q.get('id')) }); return }
+          if (op === 'review.publish') { sendJson({ ok: true, ...await workflows.publish(await payload()) }); return }
+          if (op === 'issue.develop') { sendJson({ ok: true, ...await workflows.develop(await payload()) }); return }
           if (op === 'reviews') {
-            const snaps = await snapshots(); const meLogin = (cfg.me?.login || '').trim(); let comments = []
-            for (const snap of snaps) for (const mr of snap.mrs ?? []) for (const c of mr.comments ?? []) comments.push({ id: c.id, repoKey: snap.repoKey, repoPath: snap.repo?.path, repoName: snap.repo?.name, mrNumber: mr.number, mrTitle: mr.title, mrState: mr.state, mrUrl: mr.url || '', author: c.author, body: c.body, file: c.file, line: c.line, createdAt: c.createdAt, resolved: !!c.resolved, needsReply: commentNeedsReply(mr, c, meLogin), kind: 'comment' })
+            const loaded = await reviewSnapshots(); const snaps = loaded.snapshots; const meLogin = (cfg.me?.login || '').trim(); let comments = []
+            for (const snap of snaps) for (const mr of snap.mrs ?? []) for (const c of mr.comments ?? []) comments.push({ id: c.id, repoKey: snap.repoKey, repoPath: snap.repo?.path, repoName: snap.repo?.name, mrNumber: mr.number, mrTitle: mr.title, mrState: mr.state, mrUrl: mr.url || '', author: c.author, body: c.body, file: c.file, line: c.line, createdAt: c.createdAt, resolved: c.resolved ?? null, needsReply: commentNeedsReply(mr, c, meLogin), kind: c.kind || 'comment' })
             const rk = q.get('repoKey') || ''; if (rk) comments = comments.filter((c) => c.repoKey === rk)
-            if (q.get('unresolved') === '1') comments = comments.filter((c) => !c.resolved)
+            if (q.get('unresolved') === '1') comments = comments.filter((c) => c.resolved === false)
             if (q.get('needsReply') === '1') comments = comments.filter((c) => c.needsReply)
             const s = (q.get('q') || '').toLowerCase(); if (s) comments = comments.filter((c) => c.body?.toLowerCase().includes(s) || c.author?.name?.toLowerCase().includes(s) || c.file?.toLowerCase().includes(s) || c.mrTitle?.toLowerCase().includes(s))
             comments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
             const limit = Math.max(1, Math.min(1000, Number(q.get('limit') || 300)))
-            sendJson({ ok: true, comments: comments.slice(0, limit), total: comments.length }); return
+            sendJson({ ok: true, comments: comments.slice(0, limit), total: comments.length, errors: loaded.errors, coverage: { limited: true, note: '按仓库详情预算加载评论，线程解决状态未知；此列表不是完整历史。' } }); return
           }
           if (op === 'activity') { const snaps = await snapshots(); const overview = overviewFrom(snaps, cfg); sendJson({ ok: true, activity: overview.activity, recent: overview.recent, topReviewers: overview.topReviewers }); return }
           if (op === 'refresh') { const snaps = await snapshots(true); const overview = overviewFrom(snaps, cfg); sendJson({ ok: true, overview, lastRefreshAt }); return }
           if (op === 'config.get') { sendJson({ ok: true, config: store.masked(), configPath }); return }
           if (op === 'config.set') {
             if (req.method !== 'POST') { sendJson({ ok: false, error: 'POST required' }, 405); return }
-            const raw = await readBody(req); let patch; try { patch = JSON.parse(raw || '{}') } catch { sendJson({ ok: false, error: 'invalid json' }, 400); return }
-            await store.set(patch); fetcher.invalidate()
-            const snaps = await snapshots(true); sendJson({ ok: true, config: store.masked(), overview: overviewFrom(snaps, store.get()) }); return
+            await store.set(await payload()); fetcher.invalidate()
+            sendJson({ ok: true, config: store.masked(), overview: null, refreshQueued: true })
+            snapshots(true).catch(err => log?.warn?.('[codehub] refresh after save failed:', err.message)); return
           }
           if (op === 'config.test') {
             if (req.method !== 'POST') { sendJson({ ok: false, error: 'POST required' }, 405); return }
@@ -961,7 +1155,7 @@ export function apply(ctx, loaderConfig = {}) {
           sendJson({ ok: false, error: `unknown op: ${op}` }, 400)
         } catch (err) {
           log?.warn?.('[codehub] api error:', err)
-          try { if (!res.headersSent) { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify({ ok: false, error: clip(err?.message ?? String(err), 300) })) } } catch {}
+          try { if (!res.headersSent) { res.writeHead(Number.isInteger(err.status) ? err.status : 500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify({ ok: false, error: clip(err?.message ?? String(err), 300) })) } } catch {}
         }
       },
     })
@@ -984,5 +1178,7 @@ export function apply(ctx, loaderConfig = {}) {
  */
 export const __test = {
   mapGhPr, ghCiState, isSafeRepoPath, isSafeHost, apiBaseFor,
-  GH_PR_LIST_FIELDS, GH_PR_VIEW_FIELDS,
+  GH_PR_LIST_FIELDS, GH_PR_VIEW_FIELDS, GH_ISSUE_FIELDS,
+  mapGhIssue, parseGhPages, ghEnv, decorate, buildOverview, mergeRepos, run,
+  createFetcher, createConfigStore, githubRequest, pullDetail, issueDetail,
 }
