@@ -1,522 +1,385 @@
 # dsh-codehub-dashboard 设计文档
 
-> 版本：0.1.0 | 最后更新：2026-10-14
+> 版本：0.1.0 | 最后更新：2026-10-15
+>
+> 本文描述**当前实现**。与早期草案的三处结构性差异：不再依赖 dsh-better-sidebar（改用 DSH 原生 `slots`/`layout`/`uiWorkspace`）；新增 `workflows.js`（原生模型检视 + Issue 开发会话 + 审计持久化）；HTTP 路由加入 DSH 原生 `connection` 信任校验。
 
 ## 1. 项目概述
 
 ### 1.1 目标
 
-在 DeepSeek Harness（DSH）侧边栏中提供一个 **CodeHub 看板**标签页，聚合多个 GitHub 仓库的 Pull Request、Review、Comment 数据，以统计图表和结构化列表的形式呈现，帮助用户快速识别：
+在 DSH 左侧导航中提供 **CodeHub 工作区**，聚合多个 GitHub 仓库/组织的 Pull Request、Issue 与检视意见，并复用 DSH 已有能力完成两条工作流：
 
-- 待处理的 MR（Merge Request / Pull Request）
-- 需要自己评审的 MR
-- 未解决的检视意见（Review Comments）
-- 需要自己回复的评论
-- CI 失败的 MR
-- 各仓库的整体健康度
+- 看板：待处理 PR、待我评审、未解决意见、需我回复、CI 失败、仓库健康度。
+- AI 检视：调用宿主配置的模型生成检视草稿，用户编辑并**二次确认**后以 **COMMENT** 事件发布。
+- Issue 开发：核验本地克隆后，由宿主 `sessionController` 创建原生会话并提交 Issue 上下文。
 
 ### 1.2 核心约束
 
 | 约束 | 说明 |
 |------|------|
-| **真实数据** | 不使用模拟/mock 数据，所有数据来自 GitHub API（gh CLI 或 REST） |
-| **零外部依赖** | Dashboard SPA 为单文件 vanilla JS + 内联 SVG 图表，无 CDN/第三方库 |
-| **DSH 插件规范** | 遵循 cordis 插件体系、better-sidebar 服务契约、webServer 路由规范 |
-| **安全** | Token 脱敏、execFile 无 shell、文件权限 best-effort 0600 |
-| **离线容错** | gh 不可用时降级到 HTTP API；HTTP 失败时显示明确错误提示 |
+| 复用宿主架构 | 模型、会话、目录选择、导航、鉴权全部走 DSH 原生服务，不自建 Agent/认证/工作区框架 |
+| 真实数据 | 不使用 mock 数据；数据缺失时如实标注，不伪装成「空即正常」 |
+| 零运行时依赖 | SPA 为单文件 vanilla JS + 内联 CSS/SVG；`package.json` 无 runtime dependencies |
+| 绝不自动批准 | 发布只使用 `COMMENT` 事件，代码路径不接受客户端传入的 event 类型 |
+| 发布不重放 | 远端结果不确定时进入 `publish_unknown`，禁止自动重试 |
+| 离线容错 | gh 不可用降级 HTTP；两者都失败时显示明确错误并保留已同步数据 |
 
 ### 1.3 技术选型
 
 | 层面 | 选择 | 理由 |
 |------|------|------|
-| 数据源 | [gh CLI](https://cli.github.com/) v2.102+ | GitHub 官方工具，JSON 输出稳定，支持嵌套字段 |
-| 备选数据源 | GitHub REST API v3 | 当 gh 未安装/未登录时通过 PAT 直接调用 |
-| 辅助数据源 | git CLI | 补充本地仓库元信息（默认分支、远端 URL） |
-| 侧边栏集成 | dsh-better-sidebar `registerTab` | DSH 生态标准扩展点 |
-| Dashboard UI | 单文件 HTML + vanilla JS + SVG | 零构建、零依赖、可离线 |
-| Host 通信 | Node http prefix route `/codehub` | DSH webServer 标准路由机制 |
+| 主数据源 | gh CLI v2.102+ | 官方工具、`--json` 平铺字段稳定、`gh api` 覆盖 REST 端点 |
+| 备选数据源 | GitHub REST（`fetch` + Bearer token） | gh 未安装/未登录且已配置 token 时降级 |
+| 辅助数据源 | git CLI | 本地仓库元信息、Issue 开发前的 origin 核验 |
+| 导航集成 | `ctx.slots.inject('main' / 'sidebar.panellist')` | DSH 0.2 原生扩展点，无需第三方侧边栏插件 |
+| AI 检视 | `ctx.llm.stream` + `ctx.sessions.create/flush` | 宿主模型目录与会话语义，凭据由宿主管理 |
+| Issue 开发 | `ctx.sessionController.create/prompt` + `ctx.uiWorkspace.openSession` | 原生会话生命周期，插件不实现 Agent |
+| Host 通信 | webServer `kind:'prefix'` path `/codehub` | DSH 标准路由机制 |
 
 ---
 
 ## 2. 系统架构
 
-### 2.1 整体架构图
-
 ```
-┌─────────────────────────────────────────────────────┐
-│                  DSH Desktop App                     │
-│  ┌─────────────────────────────────────────────────┐ │
-│  │           better-sidebar (client)               │ │
-│  │  ┌───────────────────────────────────────────┐  │ │
-│  │  │  CodeHub Tab (iframe → /codehub/index.html)│  │ │
-│  │  │  • registerTab(id:'codehub:dashboard')     │  │ │
-│  │  │  • badge polling (/codehub/api?op=summary) │  │ │
-│  │  └───────────────────────────────────────────┘  │ │
-│  └─────────────────────────────────────────────────┘ │
-│                        ↕ HTTP                         │
-│  ┌─────────────────────────────────────────────────┐ │
-│  │         codehub-dashboard (host)                │ │
-│  │  ┌─────────────┐  ┌──────────┐  ┌───────────┐  │ │
-│  │  │ Config Store │  │  Cache   │  │ Aggregator│  │ │
-│  │  │ (~/.dsh/    │  │ (TTL +   │  │ (overview, │  │ │
-│  │  │  codehub-   │  │  rev)    │  │  summary,  │  │ │
-│  │  │  dashboard/)│  │          │  │  filter)   │  │ │
-│  │  └──────┬──────┘  └────┬─────┘  └─────┬─────┘  │ │
-│  │         │              │               │         │ │
-│  │  ┌──────▼──────────────▼───────────────▼──────┐  │ │
-│  │  │          Provider Dispatcher               │  │ │
-│  │  │  auto → gh → http → git-meta → error       │  │ │
-│  │  └──┬──────────┬──────────────┬───────────────┘  │ │
-│  │     │          │              │                   │ │
-│  │  ┌──▼──┐   ┌───▼───┐    ┌────▼────┐             │ │
-│  │  │ gh  │   │ http  │    │  git    │             │ │
-│  │  │ CLI │   │ REST  │    │  CLI    │             │ │
-│  │  └─────┘   └───────┘    └─────────┘             │ │
-│  └─────────────────────────────────────────────────┘ │
-│                        ↕                              │
-│            GitHub API / Local Git Repos               │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────── DSH Desktop ────────────────────────┐
+│  client half (client.js, window.__ModuleLoader__)           │
+│   ├─ ctx.slots.inject('sidebar.panellist') → CodeHub 图标    │
+│   ├─ ctx.slots.inject('main')              → CodeHubView    │
+│   └─ iframe(/codehub/index.html) ⇄ postMessage 受限桥接      │
+│         · origin + event.source + 消息白名单 + id 去重        │
+│                        ↕ HTTP（同源）                        │
+│  host half (index.js)  /codehub prefix route                │
+│   ├─ ctx.connection.admit(req)  ← 每个请求的原生信任校验      │
+│   ├─ Config Store（原子写、rev 版本号、token 脱敏）            │
+│   ├─ Fetcher（TTL 缓存、并发 3、inflight 去重、gh 探测缓存）    │
+│   ├─ Providers：gh / http / git-meta                        │
+│   ├─ Aggregator：decorate / buildOverview / filterMrs       │
+│   └─ Workflows（workflows.js）                              │
+│        ├─ ctx.llm / ctx.sessions / ctx.sessionController    │
+│        └─ 审计文件持久化（锁 + fsync + rename）               │
+└───────────────────────────┬─────────────────────────────────┘
+                    GitHub API / 本地 Git 仓库
 ```
 
-### 2.2 模块职责
+### 2.1 模块职责
 
-| 模块 | 文件 | 职责 |
-|------|------|------|
-| Host half | `index.js` | 配置持久化、数据拉取（gh/http/git）、缓存管理、聚合计算、HTTP 路由 |
-| Client half | `client.js` | betterSidebar tab 注册、badge 轮询、iframe 容器 |
-| Dashboard SPA | `web/index.html` | 5 个视图渲染、SVG 图表、筛选交互、设置表单 |
-| Bundle patch | `cordis.patch.yml` | DSH loader 挂载声明 |
-| Test harness | `scripts/test-host.mjs` | 独立验证 host API 正确性 |
+| 模块 | 文件 | 行数 | 职责 |
+|------|------|------|------|
+| Host half | `index.js` | 1184 | 配置存储、gh/http/git provider、缓存与聚合、HTTP 路由与安全栅栏 |
+| Workflows | `workflows.js` | 488 | 原生模型检视草稿、COMMENT 发布、Issue 开发会话、审计持久化 |
+| Client half | `client.js` | 90 | 原生左导航注册、iframe 容器、受限宿主桥接 |
+| Dashboard SPA | `web/index.html` | 938 | 7 个视图、详情抽屉、工作流交互、设置表单、内联 SVG 图表 |
+| Bundle patch | `cordis.patch.yml` | — | DSH loader 挂载声明 |
+| Tests / dev | `scripts/` | — | 数据/契约/工作流/SPA/集成测试与隔离开发服务 |
 
 ---
 
-## 3. 数据模型
+## 3. 原生服务契约
 
-### 3.1 归一化模型
+### 3.1 Host inject
 
-所有 provider 的输出统一为以下结构，aggregator 只消费此格式：
+```javascript
+export const name = 'codehub-dashboard'
+export const inject = {
+  required: ['webServer', 'connection'],
+  optional: ['llm', 'sessions', 'sessionController'],
+}
+```
+
+`connection` 为**必需**：路由在拿到它之前不处理任何请求。可选服务缺失时对应动作返回 503 并在 UI 中禁用，不会降级到自建实现。
+
+### 3.2 Client inject
+
+`package.json` 的 `dsh.client.inject = ['slots', 'layout', 'uiWorkspace']`，注册面板 `PANEL_ID = 'codehub:dashboard'`（order 45，label「CodeHub」）。宿主桥接只暴露两个动作：`pick-directory` 与 `open-session`；请求必须满足 `type/id/action(/sessionId)` 的严格键集与格式校验，响应按 iframe 生命周期 generation 与 origin 双重核验，并对已见 id 去重（上限 4096）。
+
+### 3.3 已核实的宿主签名（证据：已安装 app.asar，宿主包版本 0.2.0-rc.2）
+
+| 服务 | 契约 | 插件用法 |
+|------|------|----------|
+| `sessionController.create(request)` | 单参数；显式传入 `sessionId` 时宿主**采纳**该 id | 用持久化的 sessionId 创建/复用会话 |
+| `sessionController.prompt(request, signal)` | **两参数**，实现内 `signal.throwIfAborted()` | 必须传 `AbortSignal.timeout(60_000)`；signal 只约束准入前的等待，超时后关联保持 pending，重试复用同一 requestId |
+| `llm.stream(request)` | 需要 `provider/model/maxTokens/messages` | 检视请求带 `purpose: 'codehub-review'` 与 `AbortSignal.timeout(120_000)` |
+| `sessions.create/flush/append/deriveMessages` | 会话消息与 request/header 的原生落盘 | system/user 消息 + `request/header`，不伪造 assistant 结算 |
+| `uiWorkspace.pickDirectory/openSession` | 目录选择、打开原生会话 | 设置页绑定本地路径、Issue 开发跳转 |
+
+### 3.4 能力探测
+
+`workflows.capabilities()` 返回 `{ ai, develop }`，由 `boot` 响应带给 SPA；UI 据此启用/禁用按钮，避免用户点击后才知道服务缺失。
+
+---
+
+## 4. 数据模型
+
+所有 provider 输出统一为归一化快照，aggregator 与 workflows 只消费该格式：
 
 ```typescript
 interface Snapshot {
-  repoKey: string           // "{instanceId}:{owner/name}"
+  repoKey: string                  // "{host}:{owner/name}"
   source: 'gh' | 'http' | 'git-meta' | 'error'
-  fetchedAt: string         // ISO 8601
+  fetchedAt: string                // ISO 8601
   error: string | null
-  degradedNote?: string     // 降级说明
+  issueError?: string | null       // Issue 拉取独立失败（不影响 PR 数据）
+  degradedNote?: string            // 例如「gh 失败（…），已降级为 HTTP API」
   elapsedMs?: number
-  repo: RepoMeta
+  coverage: { limited: boolean; details: 'on-demand' }
+  repo: RepoMeta                   // { key,name,owner,path,defaultBranch,description,localPath? }
   mrs: MR[]
-}
-
-interface RepoMeta {
-  key: string
-  name: string              // repo basename
-  owner: string
-  path: string              // "owner/name"
-  defaultBranch: string
-  description: string
-  localPath?: string
-  remoteUrl?: string
-  instanceId?: string
+  issues: Issue[]
 }
 
 interface MR {
-  number: number
-  title: string
-  author: Person
-  state: 'open' | 'merged' | 'closed'
-  draft: boolean
-  sourceBranch: string
-  targetBranch: string
-  createdAt: string         // ISO 8601
-  updatedAt: string
-  mergedAt: string | null
-  additions: number
-  deletions: number
-  changedFiles: number
-  labels: string[]
+  number: number; title: string; author: Person
+  state: 'open' | 'merged' | 'closed'; draft: boolean
+  sourceBranch: string; targetBranch: string
+  createdAt: string; updatedAt: string; mergedAt: string | null
+  additions: number; deletions: number; changedFiles: number; labels: string[]
   ciState: 'success' | 'failure' | 'pending' | 'none'
   reviewDecision: 'approved' | 'changes_requested' | 'pending' | 'none'
-  requestedReviewers: string[]  // logins
-  reviews: Review[]
-  comments: ReviewComment[]
-  url: string
-}
-
-interface Review {
-  id: string
-  author: Person
-  state: 'approved' | 'changes_requested' | 'commented'
-  submittedAt: string
-  body: string
+  requestedReviewers: string[]; reviews: Review[]; comments: ReviewComment[]
+  url: string; body: string; headSha: string; baseSha: string
 }
 
 interface ReviewComment {
-  id: string
-  author: Person
-  body: string
-  file: string | null
-  line: number | null
-  createdAt: string
-  resolved: boolean
+  id: string; author: Person; body: string
+  file: string | null; line: number | null; createdAt: string
+  resolved: boolean | null         // null = 未知（gh/REST 不返回线程解决状态）
+  kind: 'comment' | 'conversation'
 }
-
-interface Person { name: string; login: string }
 ```
 
-### 3.2 派生字段（decorate）
+`resolved` 为 **`null`（未知）**而非 `false` —— gh/REST 评论不携带线程解决状态，未知不能当成未解决；`unresolvedCount` 与 `needsReplyCount` 只计 `resolved === false`。
 
-Aggregator 在归一化 MR 上追加以下派生字段：
+派生字段（`decorate`）：
 
 | 字段 | 计算逻辑 |
 |------|----------|
-| `needsMyReview` | open && !draft && me ∈ requestedReviewers && me 尚未提交 review |
-| `commentCount` | comments.length |
-| `unresolvedCount` | comments.filter(!resolved).length |
-| `needsReplyCount` | unresolved && author ≠ me && (mr.author = me ∨ reviewDecision = changes_requested) |
-| `reviewCount` | reviews.length |
+| `needsMyReview` | open && !draft && me ∈ requestedReviewers && me 未提交 `approved`/`changes_requested`（GitHub 只在这两种评审下清除评审请求，`commented` 仍算待我评审） |
+| `commentCount` | `comments.length` |
+| `unresolvedCount` | `comments.filter(c => c.resolved === false).length` |
+| `needsReplyCount` | 未解决 && author ≠ me && (mr.author = me ∨ reviewDecision = changes_requested) |
+| `reviewCount` | `reviews.length` |
 
-### 3.3 聚合输出（Overview）
-
-```typescript
-interface Overview {
-  summary: {
-    repos: number; errors: number
-    openMrs: number; mergedMrs: number; closedMrs: number
-    needsReview: number; drafts: number
-    unresolvedComments: number; needsReply: number
-    failingCi: number; mergedThisWeek: number
-    totalComments: number
-    me: { login: string; name: string } | null
-  }
-  repos: RepoSummary[]        // per-repo counts
-  statusDist: { open; merged; closed }
-  activity: DayBucket[]       // 30 days
-  topReviewers: ReviewerAgg[] // top 8
-  recent: Event[]             // latest 24
-  generatedAt: string
-}
-```
+`buildOverview` 输出 `summary / repos[] / statusDist / activity[30天] / topReviewers[8] / recent[24] / coverage / generatedAt`，其中 `coverage.note` 固定说明样本口径（gh 每仓库 200 条上限、HTTP 首批、按需评论、未获取线程不计未解决）。
 
 ---
 
-## 4. Provider 设计
+## 5. Provider 设计
 
-### 4.1 调度策略
+### 5.1 调度
 
 ```
 planSource(repo, cfg, ghOk):
-  if cfg.provider == 'gh'       → 'gh'
-  if cfg.provider == 'http'     → 'http'
-  if cfg.provider == 'git'       → 'git-meta'  // 旧配置值 'git-meta' 由 normalize 映射为 'git'
-  if cfg.provider == 'auto':
-    if ghOk                     → 'gh'
-    elif instance has token     → 'http'
-    else                        → 'error'
+  'gh'   → gh
+  'http' → http
+  'git'  → git-meta（仅元信息，不能取 PR/Issue；相关请求返回 503）
+  'auto' → ghOk ? gh : (实例有 token ? http : error)
 ```
 
-### 4.2 gh Provider（主数据源）
+### 5.2 gh Provider
 
-**命令映射：**
+`gh pr list --state all --limit 200 --json <平铺字段>` + `gh issue list` 同规格；详情、diff、组织展开、评论与发布走 `gh api --hostname <host> …`，分页读取使用 `--paginate --slurp`。
 
-| 操作 | gh 命令 | JSON 字段 |
-|------|---------|-----------|
-| PR 列表 | `gh pr list --repo <path> --state all --limit 200 --json <fields>` | number, title, state, isDraft, headRefName, baseRefName, createdAt, updatedAt, mergedAt, additions, deletions, changedFiles, reviewDecision, url, author{login,name}, labels{name}, reviewRequests{login}, latestReviews{...} |
-| PR 详情 | `gh pr view <n> --repo <path> --json <fields>` | reviews{author{login,name},state,submittedAt,body}, comments{author{login,name},body,path,line,createdAt} |
-| 认证探测 | `gh auth status` | exit code + stderr |
-| 版本检查 | `gh --version` | stdout |
+关键点（详见 [gh-cli-contract.md](gh-cli-contract.md)）：`gh --json` 只接受**顶层平铺字段**，嵌套选择器 `author{login,name}` 会被 gh 在发请求前本地拒绝；`statusCheckRollup` 在 list 与 view 均合法，因此 CI 状态无需逐 PR 调用 `pr view`。
 
-**执行方式：** `execFile(ghPath, args, { env: { GH_TOKEN, GH_HOST } })` — 无 shell，固定参数列表。
+执行方式：`execFile`（无 shell）、固定参数数组、30s 超时、16MB 缓冲、`GH_PROMPT_DISABLED=1`、`GH_PAGER=cat`；token 按实例 host 选择 `GH_TOKEN` 或 `GH_ENTERPRISE_TOKEN`，并在注入前清除继承来的其它 token 环境变量。
 
-**Token 传递优先级：**
-1. 实例配置的 token → 设为 `GH_TOKEN` 环境变量
-2. 用户全局 `gh auth login` 凭据（gh 自动读取）
+### 5.3 HTTP Provider
 
-**降级链：** gh 失败 → 若实例有 token 则降级到 HTTP API → 否则标记 error。
+REST 列表 + 逐 PR 详情（受 `http.detailLimit` 预算约束），`fetch` + `Authorization: Bearer <token>`，`perPage`/`detailLimit`/`timeoutMs` 可配置；分页最多 100 页后报 422 而不是静默截断；`AbortSignal.timeout` 控制单次请求；`redirect: 'error'` 防止 token 随重定向外泄。CI 状态恒为 `none`（不逐 PR 拉 check-runs，属诚实降级）。
 
-### 4.3 HTTP Provider（备选）
+### 5.4 传输回退规则
 
-直接调用 GitHub REST API v3：
-- `GET /repos/{owner}/{repo}/pulls?state=all&per_page=100`
-- `GET /repos/{owner}/{repo}/pulls/{n}/reviews`
-- `GET /repos/{owner}/{repo}/pulls/{n}/comments`
+`githubRequest()` 先试 `gh api`，失败后**只对 GET** 且实例有 token 时才回退 REST。写操作（`method !== 'GET'`）失败绝不换渠道重发 —— CLI 退出码不能证明 GitHub 未收到请求。
 
-认证：`Authorization: Bearer <token>`。超时：可配置（默认 15s）。
+### 5.5 缓存与并发
 
-### 4.4 Git Provider（辅助）
+| 项 | 值 | 说明 |
+|----|-----|------|
+| TTL | `pollMinutes × 60s`（默认 10 分钟） | 绑定 `store.rev`，配置变更即失效 |
+| 并发 | 3 | `mapLimit` |
+| 仓库解析缓存 | 同 TTL + rev | 组织展开结果复用 |
+| gh 探测缓存 | 5 分钟 | 避免每仓库重复 `auth status`；`invalidate()` 一并重置 |
+| 整轮去重 | `inflight` promise | 并发请求合并为一次刷新 |
+| 页面缓存 | mtime 校验 | `web/index.html` 不逐请求读盘 |
+| 预热 / ticker | 启动后 3s；60s 检查 TTL | 不阻塞插件激活 |
 
-仅补充元数据：
-- `git remote get-url origin` → 解析 owner/name
-- `git symbolic-ref refs/remotes/origin/HEAD` → 默认分支
-- 不产生 MR 数据
-
-### 4.5 缓存策略
-
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| TTL | `pollMinutes × 60s` | 可配置，默认 10 分钟 |
-| 并发 | 3 | 避免同时发起过多 API 请求 |
-| 版本绑定 | cache entry 绑定 config.rev | 配置变更后自动失效 |
-| Badge 轮询 | 60s 间隔，读缓存不触发 I/O | 轻量级 |
-| 后台刷新 | 60s ticker，仅在 TTL 过期时触发 | 避免无效请求 |
-| 初始预热 | 启动后 3s 延迟首次拉取 | 不阻塞插件加载 |
+快照**不持久化**：重启后重新拉取。这是刻意取舍 —— 避免陈旧数据被误读为实时状态。
 
 ---
 
-## 5. 配置设计
+## 6. 工作流设计
 
-### 5.1 配置文件
+### 6.1 AI 检视（`review.create` → `review.publish`）
 
-路径：`~/.dsh/codehub-dashboard/config.json`（可通过 `configPath` 或 `CODEHUB_DASHBOARD_CONFIG` 环境变量覆盖）
+```
+review.create {repoKey,number,confirmed:true}
+  ├─ 确认门 + 服务/配置校验（llm.stream、sessions.create/flush、cfg.ai.provider/model）
+  ├─ disk.read()：历史审计状态不可恢复时拒绝调用模型
+  ├─ getPullRequest(diff) → assertBinding + assertOpen + head SHA 校验
+  ├─ reviewSnapshot()：字段 8KB、diff 64KB 上限，截断时置 truncated
+  │   并在草稿正文尾部追加「检视范围受限」声明
+  ├─ 落盘 status='generating'（先落盘再调模型）
+  ├─ sessions.create + append(system/user/request/header) + flush
+  ├─ llm.stream(request, AbortSignal.timeout(120s)) → 汇总流式 block
+  └─ 落盘 status='draft'；失败则 status='failed' 并保留 failure
+
+review.publish {id,body?,confirmed:true}
+  ├─ 状态机：published 幂等返回（且禁止改正文）/ publishing|publish_unknown → 409 needsVerification
+  │          / 仅 draft 可发布
+  ├─ 记录 store.rev，预检后校验 rev 未变（配置竞态 → 409）
+  ├─ 预检：仓库与 PR 标识、URL、仍为 open、head SHA 未变；预检失败回退为 draft
+  └─ publishReview() 固定 POST repos/{path}/pulls/{n}/reviews
+        { event:'COMMENT', body, commit_id }
+       · 成功 → published + 远端结果
+       · 任何派发后错误 → publish_unknown + needsVerification，永不自动重发
+```
+
+检视是**辅助调用而非 Agent 回合**：结果与失败都活在审计工件里，不伪造 assistant 结算或 turn id。请求不带任何工具，GitHub 内容以「不可信数据」前缀送入模型。
+
+### 6.2 Issue 开发（`issue.develop`）
+
+```
+确认 → getIssue → assertBinding
+     → repo.localPath 必填 → verifyLocalRepo() 校验 origin 与 Issue 仓库一致，返回绝对 cwd
+     → 进程内 developing 集合去重（同 filePath+repoKey+number 并发 → 409）
+     → 读/建关联：sessionId=session-<uuid>、requestId=codehub-issue-<uuid>、context=issueContext(data)
+     → status==='ready' → 直接复用返回 {sessionId, reused:true}
+     → 已有关联但 cwd / repositoryPath 变化 → 409（不静默迁移会话）
+     → sessionController.create({cwd, sessionId})；返回 id 不一致即 503
+     → sessionController.prompt({sessionId, requestId, content, mode:'followup'},
+                               AbortSignal.timeout(60s))
+     → accepted !== true → 503；否则落盘 status='ready'
+```
+
+重试永远复用同一 sessionId/requestId 与同一份上下文，因此不会产生第二份任务。SPA 拿到 sessionId 后经宿主桥接 `open-session` 打开原生会话；后续工具执行仍由宿主的批准与安全机制控制。
+
+### 6.3 审计持久化
+
+路径：`<configPath>.workflows.json`（默认 `~/.dsh/codehub-dashboard/config.json.workflows.json`）。
+
+- 写入序列：`open → write → fsync → rename`，配合 `.lock` 与 `MAX_STATE_BYTES`（48MB）上限。
+- 草稿上限 100（保护态 `generating/publishing/publish_unknown` 不被淘汰），Issue 关联上限 1000。
+- 读取时 `validateState()` 校验状态集合与 id 唯一性；无法恢复的历史状态 **fail-closed**，不覆盖既有发布证据。
+- 记录含代码、Issue 正文与模型输入输出，属敏感文件，不要提交或同步。
+
+---
+
+## 7. 配置设计
+
+`~/.dsh/codehub-dashboard/config.json`（可被 bundle `configPath` 或 `CODEHUB_DASHBOARD_CONFIG` 覆盖）：
 
 ```jsonc
 {
   "version": 1,
-  "provider": "auto",           // auto | gh | http | git（历史值 git-meta 自动迁移为 git）
+  "provider": "auto",            // auto | gh | http | git（历史值 git-meta 自动迁移为 git）
   "me": { "name": "", "login": "" },
   "pollMinutes": 10,
   "ghPath": "gh",
-  "instances": [
-    { "id": "i1", "name": "GitHub", "host": "github.com", "token": "ghp_xxxx" }
-  ],
-  "repos": [
-    { "id": "r1", "instance": "i1", "path": "cli/cli", "localPath": "", "enabled": true }
-  ],
+  "instances": [{ "id": "i1", "name": "GitHub", "host": "github.com", "token": "" }],
+  "repos": [{ "id": "r1", "instance": "i1", "path": "owner/name", "localPath": "", "enabled": true, "defaultBranch": "" }],
+  "organizations": [{ "owner": "some-org", "instance": "i1", "enabled": true }],
+  "ai": { "provider": "", "model": "" },
   "http": { "perPage": 100, "detailLimit": 25, "timeoutMs": 15000 }
 }
 ```
 
-### 5.2 安全规则
+`normalize()` 负责区间钳制（perPage 1–100、detailLimit 0–50、timeoutMs 1–60s、pollMinutes 1–1440）、`provider` 白名单与 `git-meta → git` 迁移，并丢弃 UI 派生的 `hasToken`。`store.set()` 校验实例 id 唯一/host 合法、仓库 `owner/name`、组织名正则、引用完整性，保存队列串行化，成功后 `rev++`。
 
-| 规则 | 实现 |
-|------|------|
-| Token 落盘权限 | `chmod 0o600`（best-effort，Windows 忽略） |
-| API 响应脱敏 | `****` + 末 4 位 |
-| 保存时保留旧 token | 若传入值以 `****` 开头，保持原值不变 |
-| 命令执行 | `execFile`（无 shell），固定参数列表 |
-| POST body 上限 | 256 KB |
+安全规则：token 仅在响应中脱敏（`****`+末 4 位）；masked 值回传时保留原 token，但**更换 host 必须清空重填**（否则 400）；临时文件带 pid+随机后缀防撕裂；POSIX `mode 0600` + `chmod`，Windows 上 chmod 为 no-op（真正屏障是目录 ACL）。
 
 ---
 
-## 6. API 设计
+## 8. HTTP API 设计
 
-所有端点挂载在 `/codehub` prefix route 下。
+挂载于 `/codehub` prefix。完整参数与响应见 [api-reference.md](api-reference.md)。
 
-### 6.1 端点清单
+### 8.1 请求栅栏（顺序固定）
 
-| 方法 | op | 说明 | 响应 |
-|------|-----|------|------|
-| GET | `boot` | 初始化：配置 + 摘要 | `{ ok, version, config(masked), summary?, hasData }` |
-| GET | `summary` | 轻量摘要（badge 用，纯缓存） | `{ ok, summary, cached }` |
-| GET | `overview` | 完整看板数据 | `{ ok, overview, lastRefreshAt }` |
-| GET | `mrs` | MR 列表（支持筛选排序） | `{ ok, mrs[], total }` |
-| GET | `mr` | 单个 MR 详情 | `{ ok, mr, repo, source }` |
-| GET | `reviews` | 检视意见收件箱 | `{ ok, comments[], total }` |
-| GET | `activity` | 活跃趋势 + 最近动态 | `{ ok, activity[], recent[], topReviewers[] }` |
-| GET | `refresh` | 强制刷新全部仓库 | `{ ok, overview, lastRefreshAt }` |
-| GET | `config.get` | 获取配置（脱敏） | `{ ok, config, configPath }` |
-| POST | `config.set` | 保存配置并刷新 | `{ ok, config, overview }` |
-| POST | `config.test` | 连通性测试 | `{ ok, results[] }` |
-| GET | `repos.discover` | 工作区 Git 仓库扫描 | `{ ok, repos[] }` |
+1. `ctx.connection.admit(req)`：方法不存在 → 503；返回含 `rejection` → 401（登录失效）或 403（未通过信任校验）。校验通过前不读配置、不访问 GitHub。
+2. `ensureBoot()`：配置加载失败时回滚 `booted`，允许下次重试。
+3. 路径分派：`/codehub`（及 `/`、`/index.html`）返回 SPA（CSP + `nosniff` + `no-referrer` + `no-store`）；`/codehub/api` 进入 op；其它 404。
+4. 写 op（`config.set`、`config.test`、`review.create`、`review.publish`、`issue.develop`）：非 POST → 405；Origin 主机不匹配或 `sec-fetch-site: cross-site` → 403；`content-type` 非 `application/json` → 415；其余 op 非 GET → 405。
+5. body 上限 256KB，`readBody` 超限后立即短路后续 data 事件。
 
-### 6.2 MR 列表筛选参数
+### 8.2 op 一览
 
-| 参数 | 类型 | 说明 |
+`boot`、`summary`、`overview`、`mrs`、`mr`、`mr.diff`、`issues`、`issue`、`reviews`、`activity`、`refresh`、`models`、`review.create`、`review.get`、`review.publish`、`issue.develop`、`config.get`、`config.set`、`config.test`、`repos.discover`（共 20 个）。
+
+`config.set` 立即返回 `{ok, config:masked, overview:null, refreshQueued:true}`，随后在后台刷新 —— 保存不等待上游。
+
+---
+
+## 9. Dashboard UI 设计
+
+### 9.1 视图（7 个）
+
+| 视图 | Hash | 内容 |
 |------|------|------|
-| `repoKey` | string | 按仓库过滤 |
-| `state` | `all\|open\|merged\|closed` | 状态过滤 |
-| `q` | string | 搜索标题/作者/分支/标签/#号 |
-| `needsReview` | `1` | 仅待我评审 |
-| `unresolved` | `1` | 仅有未解决意见 |
-| `sort` | `updated\|created\|comments` | 排序方式 |
-| `limit` | number | 返回上限（默认 200，最大 500） |
+| 概览 | `#/overview` | KPI、仓库健康、最近动态 |
+| MR | `#/mrs` | 筛选（仓库/状态/CI/待我评审/未解决/搜索/排序）+ 列表 + 详情抽屉（评论、diff、AI 草稿） |
+| Issue | `#/issues` | 筛选 + 列表 + 详情抽屉（开始开发） |
+| 检视意见 | `#/reviews` | 收件箱，按 MR 分组 |
+| 仓库 | `#/repos` | 仓库卡片与错误/降级说明 |
+| 统计 | `#/stats` | 折线 / 环形 / 双水平柱（全内联 SVG/HTML） |
+| 设置 | `#/settings` | 数据源、身份、实例、仓库、组织、模型、gh CLI、连通性测试 |
 
----
+### 9.2 诚实性渲染
 
-## 7. Dashboard UI 设计
-
-### 7.1 视图结构
-
-| 视图 | Hash Route | 内容 |
-|------|-----------|------|
-| 概览 | `#/overview` | KPI 卡片 × 6 + 4 张图表 + 最近动态 |
-| MR | `#/mrs` | 筛选工具栏 + MR 表格 + 详情抽屉 |
-| 检视意见 | `#/reviews` | 筛选 + 按 MR 分组的评论列表 |
-| 仓库 | `#/repos` | 仓库卡片网格 |
-| 设置 | `#/settings` | 数据源/身份/实例/仓库/gh CLI 配置表单 |
-
-### 7.2 图表实现
-
-全部手写 SVG，无外部依赖：
-
-| 图表 | 类型 | 数据源 |
-|------|------|--------|
-| 活跃趋势 | 折线图（3 系列：新建/合并/意见） | `overview.activity[]` |
-| MR 状态分布 | 环形图（stroke-dasharray） | `overview.statusDist` |
-| 各仓库开放 MR | 水平堆叠柱状图（HTML div） | `overview.repos[].counts` |
-| 评审活跃 Top | 水平柱状图（HTML div） | `overview.topReviewers[]` |
-
-### 7.3 主题适配
-
-CSS 变量驱动，通过 `@media (prefers-color-scheme: dark)` 切换：
-
-| Token | Light | Dark |
-|-------|-------|------|
-| `--bg` | #f6f8fa | #0d1117 |
-| `--panel` | #ffffff | #161b22 |
-| `--accent` | #4d6bfe | #6d8cff |
-| `--green` | #1a7f37 | #3fb950 |
-| `--red` | #cf222e | #f85149 |
-
-### 7.4 交互模式
-
-- **Hash 路由**：`#/view&param=value` 格式，支持浏览器前进/后退
-- **事件委托**：document-level click/change/input 监听，data-* 属性分发
-- **防抖搜索**：350ms debounce
-- **抽屉**：右侧滑出面板，Esc / 遮罩点击关闭
-- **Toast**：底部居中，2.6s 自动消失
-- **自动刷新**：60s 间隔，仅页面可见时触发，设置页脏状态时跳过
-
----
-
-## 8. DSH 插件集成
-
-### 8.1 插件清单（package.json）
-
-```jsonc
-{
-  "name": "dsh-codehub-dashboard",
-  "type": "module",
-  "main": "index.js",
-  "exports": { ".": "./index.js", "./client": "./client.js" },
-  "engines": { "node": ">=18", "dsh": ">=0.1.0-rc.6 <0.3.0" },
-  "dsh": {
-    "manifestVersion": 1,
-    "client": { "platform": "web" },
-    "bundle": { "patch": "./cordis.patch.yml" }
-  }
-}
-```
-
-### 8.2 Host Half 契约
-
-```javascript
-export const name = 'codehub-dashboard'
-export const inject = ['webServer']
-export function apply(ctx, loaderConfig) {
-  ctx.effect(() => {
-    const dispose = ctx.webServer.register({
-      kind: 'prefix', path: '/codehub',
-      handler: async (req, res) => { /* ... */ }
-    })
-    // interval + warmup timer
-    return () => { clearInterval(ticker); clearTimeout(warmup); dispose() }
-  })
-}
-```
-
-### 8.3 Client Half 契约
-
-```javascript
-window.__ModuleLoader__.load({
-  id: "dsh-codehub-dashboard",
-  factory: (require) => {
-    // ... styles, icon component, iframe component
-    exports.inject = ["betterSidebar"]
-    exports.apply = function(ctx) {
-      ctx.effect(() => ctx.betterSidebar.registerTab({
-        id: "codehub:dashboard",
-        title: () => "CodeHub",
-        icon: (size) => CodeHubIcon(size),
-        order: 45, single: true,
-        badge: () => summaryCache?.needsReview || null,
-        component: (props) => CodeHubView(props)
-      }))
-    }
-  }
-})
-```
-
-### 8.4 挂载方式
-
-Profile `package.json` 中添加 dependency + bundles entry：
-```json
-"dsh-codehub-dashboard": "link:E:/GitHub/Hello-DSH/dsh-codehub-dashboard"
-```
-Bundle patch (`cordis.patch.yml`) 提供 insert 行：
-```yaml
-- insert:
-    - id: codehub-dashboard
-      name: 'dsh-codehub-dashboard'
-```
-
----
-
-## 9. 测试策略
-
-### 9.1 独立测试验证（scripts/test-host.mjs）
-
-无需 DSH 运行环境，创建 fake cordis ctx + 真实 node:http server：
-
-| 测试项 | 验证内容 |
-|--------|----------|
-| exports | name, inject, apply 导出正确 |
-| route | prefix /codehub 注册成功 |
-| boot | 返回配置（脱敏）+ 版本号 |
-| config.set | 保存成功，token 脱敏，返回 overview |
-| config.get | 返回脱敏配置 |
-| summary | 返回摘要对象 |
-| overview | 返回 repos 数组 |
-| mrs | 返回 mrs 数组 |
-| reviews | 返回 comments 数组 |
-| activity | 返回 activity 数组 |
-| refresh | 强制刷新成功 |
-| config.test | 返回测试结果（含 git + gh 探测） |
-| repos.discover | 发现临时 git 仓库 |
-| index.html | 200 + 包含 "CodeHub" |
-| unknown op | 返回错误 |
-
-**结果：33/33 通过。**
-
-### 9.2 语法检查
-
-`node --check` 对 index.js 和 client.js 均通过。
-
----
-
-## 10. 部署与运维
-
-### 10.1 安装流程
-
-```
-dsh plugin --profile desktop add <plugin-path>
-  ↓
-pnpm 创建 link: dependency + 更新 bundles
-  ↓
-重启 DSH 桌面应用（host 侧变更需重启）
-  ↓
-硬刷新浏览器（Ctrl+Shift+R）
-  ↓
-打开 CodeHub 标签页 → 设置 → 添加仓库 → 保存
-```
-
-### 10.2 故障排查
-
-| 现象 | 原因 | 解决 |
-|------|------|------|
-| 标签页不出现 | 插件未加载 | 重启 DSH + 硬刷新 |
-| 所有仓库报错 | gh 未登录 | `gh auth login` |
-| 部分仓库报错 | 仓库路径错误或无权限 | 检查 owner/name 格式 + gh 权限 |
-| 数据不更新 | pollMinutes 过长 | 调小轮询间隔或手动刷新 |
-| Token 泄露风险 | 配置文件权限过宽 | 检查 `~/.dsh/codehub-dashboard/config.json` 权限 |
-
-### 10.3 性能考量
-
-| 指标 | 设计 |
+| 情形 | 渲染 |
 |------|------|
-| 首次加载 | 3s 延迟预热，不阻塞插件激活 |
-| Badge 轮询 | 60s 间隔，纯缓存读取，零 I/O |
-| 后台刷新 | 60s ticker + TTL 检查，仅过期时触发 |
-| API 并发 | 最多 3 个并行请求 |
-| MR 详情增强 | 仅 open + 近 30 天 merged 的 PR 拉取详情，上限 25 |
-| Dashboard 渲染 | 字符串拼接 + innerHTML，无虚拟 DOM 开销 |
+| 整列请求失败 | `listFailure(err)`：错误文案 + 重试入口，不显示空列表 |
+| 部分仓库失败 | `partialErrors(data.errors)`：列出失败仓库与原因 |
+| 样本受限 | `coverageNote(coverage)`：说明统计口径 |
+| 详情分段缺失 | `detailErrors(...)`：提示「部分信息未返回，当前详情不完整」，建议重新打开重试并在 GitHub 核对 |
+| 解决状态未知 | 显示「未知」，不计为未解决 |
+
+`state.issueError / rvError / modelsError` 等为三态（未加载 / 失败 / 成功），加载中文案独立于失败文案。
+
+### 9.3 并发与路由守卫
+
+`overviewSeq / mrSeq / rvSeq / issueSeq / routeSeq / detailSeq` 生成号守卫：过期响应与已被取代的路由不得再写入 state 或发起后续列表请求。所有列表视图先确保 overview（仓库清单）就绪，再加载本页数据。
+
+其余交互：350ms 防抖搜索、render 前后恢复焦点与光标位置、事件委托（click/change/input + `data-*`）、右侧抽屉与 Esc/遮罩关闭、toast、页面可见时 60s 自动刷新（设置页脏状态跳过）、`prefers-color-scheme` 变量主题。
+
+---
+
+## 10. 测试策略
+
+`npm test` = `node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs`（**77 用例**）**+** `node scripts/test-host.mjs`（**77 passed, 0 failed**）。
+
+| 文件 | 用例 | 覆盖 |
+|------|------|------|
+| `scripts/test-data.mjs` | 13 | gh 字段契约、映射、CI 聚合、分页解析、`githubRequest` 回退规则 |
+| `scripts/test-api.mjs` | 3 | store 归一化、provider 调度与缓存、filterMrs、鉴权与路由 |
+| `scripts/test-workflows.mjs` | 23 | 确认门、状态机、SHA/配置竞态、`publish_unknown`、持久化与崩溃恢复、宿主 `create/prompt` 契约（含 signal 必填断言） |
+| `scripts/test-client.mjs` | 38 | SPA 渲染与状态机：三态失败、coverage/detailErrors、路由守卫、工作流交互、设置保存 |
+| `scripts/test-host.mjs` | 77 断言 | 真实 node:http + fake cordis ctx 的端到端 op 验证（含 CSP、401/403/405/415、脱敏、discover） |
+
+测试使用可控 fixture，**不发布真实评论、不调用收费模型**；gh 字段检查用本地无效字段请求验证，不依赖真实登录。`npm run dev` 监听 `127.0.0.1:4173`（`PORT` 可改），使用独立临时配置并在退出时清理，不读取或修改真实 DSH 配置。
+
+---
+
+## 11. 部署与排查
+
+安装：`dsh plugin --profile desktop add <path>` → 重启 DSH → 左侧 **CodeHub**。详见 [packaging-and-offline-install.md](packaging-and-offline-install.md)。
+
+| 现象 | 排查 |
+|------|------|
+| 左侧无入口 | 确认 bundles 含 `dsh-codehub-dashboard`，且宿主 ≥ 0.2.0-rc.2（原生 slots） |
+| API 全 503 | `connection` 服务不可用（宿主异常），非插件配置问题 |
+| AI 按钮禁用 | `boot.capabilities.ai === false`，或 `cfg.ai.provider/model` 未填 |
+| 开始开发失败 | 仓库未绑定本地克隆，或 origin 与 Issue 仓库不一致 |
+| 发布提示需核实 | `publish_unknown`：先去 GitHub 确认，不要直接重发 |
+| 全部报错 | `gh auth status`；或为实例配置 token 走 HTTP |
+| 数据不更新 | 调小 `pollMinutes` 或使用刷新 |
+
+---
+
+## 12. 明确不做
+
+- **自建 Agent / 模型认证**：交给宿主 `llm` / `sessions` / `sessionController`。
+- **快照持久化（SWR）**：重启即重拉，避免陈旧数据被当成实时状态。
+- **批准/拒绝型评审发布**：只发 COMMENT。
+- **HTTP provider 的 CI 状态**：需逐 PR 追加 check-runs 请求，代价过大，显示 `CI —`。
+- **列表虚拟化**：窗口化方案见 [layout-and-dataflow-optimization.md](layout-and-dataflow-optimization.md)，属未实施提案；当前保留「一屏纵览」的滚动语义。

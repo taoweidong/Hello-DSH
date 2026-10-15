@@ -48,3 +48,41 @@
 - P0 六项全部修复；P1 十项全部完成；P2 三项记录为已知限制。
 - 实施中测试反向抓出一个新问题：`normalize` 白名单把 `git-meta` 打回 `auto`（方案原以为只改 UI 即可），已在服务端补 `git-meta → git` 兼容映射，防手编/历史配置踩坑。
 - 复验：lint 0 error，`npm test` 38/38 通过。
+
+## 追加记录：原生契约复核（2026-10-15 第二轮）
+
+> 触发点：本轮把插件从 dsh-better-sidebar 迁到 DSH 原生 `slots`/`layout`/`uiWorkspace`，并新增 `workflows.js`（AI 检视 + Issue 开发）。复核对象是**宿主真实契约**，不是代码风格。
+
+### 复核方式
+
+对已安装的 `D:/Program Files/deepseek/resources/app.asar` 做只读文本检索（该路径上是文件而非目录，无法按子路径读取），逐一核对被调用的宿主方法签名，再让测试 fixture 强制复现该签名。
+
+### 本轮发现
+
+| 级别 | 位置 | 问题 | 处置 |
+|------|------|------|------|
+| **HIGH** | `workflows.js` `develop()` | 调用 `ctx.sessionController.prompt(request)` 少传第二个参数。已安装宿主（0.2.0-rc.2）的实现为 `prompt(request, signal) { signal.throwIfAborted(); … }`，缺 signal 会在真实宿主上必抛 TypeError —— **Issue 开发主链路此前从未真正可用**，只因测试 mock 接受单参数而一直显示通过 | 改传 `AbortSignal.timeout(PROMPT_TIMEOUT_MS=60_000)`；同时校验 `create()` 返回的 sessionId 与持久化 id 一致，不一致即 503 |
+| **HIGH（测试侧）** | `scripts/test-workflows.mjs` | prompt mock 未声明第二参数，等于把上面的 bug 掩掉 | fixture 改为 `async prompt(input, signal)`，断言 `typeof signal?.throwIfAborted === 'function'` 并记录 signal；新增 `promptSignals[0] instanceof AbortSignal && !aborted` 断言与并发释放包装 |
+| MEDIUM | `web/index.html` | 17 项 UI/状态机缺陷：列表失败伪装成空列表、部分仓库失败不显示、coverage 限制不外显、详情分段缺失静默、被取代的路由仍会补发列表请求、设置页文案把 AI 能力限制说成仅 gh、仓库标签回退链缺失等 | 逐项先写失败用例再修：`listFailure` / `partialErrors` / `coverageNote` / `detailErrors`、`routeSeq` 守卫、三态错误 state、`overview 先于列表`、文案修正。38 用例全绿 |
+| MEDIUM（记录，暂不改） | `workflows.js` | 四项原生契约边界，见下 | 已在 [README.md](../README.md#已知限制) 与 [design.md](design.md) §3.3 记录 |
+
+### 记录在案的原生契约限制
+
+1. 检视草稿与 Issue 关联写在插件自己的审计文件里，不进入宿主 Agent 生命周期；宿主不会代为回滚或清理。
+2. 首次 prompt 可能触发宿主的会话标题生成（`dsh-session-title*` 生产者），检视/Issue 正文存在经由另一个模型 provider 处理的可能，插件无法固定标题 provider。
+3. rc.2 的 prompt 去重在准入完成后才生效；准入窗口内的并发重试仍可能产生两条会话消息。插件用持久化 requestId 收敛，但不保证宿主侧幂等。
+4. 关联标记 `ready` 时没有额外的落盘屏障（写入本身走 fsync+rename，但状态跃迁与宿主 ack 之间不是原子的），极端崩溃可能留下已标记未持久的关联。
+
+### 本轮验证
+
+| 命令 | 结果 |
+|------|------|
+| `node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs` | 77 tests，77 pass，0 fail（13 + 3 + 23 + 38） |
+| `node scripts/test-host.mjs` | 77 passed, 0 failed |
+| `npm test` | 上述两段全部通过 |
+| `npm run lint` | 0 error |
+| `npm pack --dry-run` | 9 文件，62.0 kB |
+
+### 复盘要点
+
+**测试 fixture 的签名宽松度就是 bug 的藏身度。** 一个接受单参数就返回成功的 mock，让「Issue 开发」这个核心卖点在整套绿色测试里活了很久。此后凡调用宿主方法，fixture 必须复刻已核实签名的** arity 与必填项**，并对必填对象做类型断言。

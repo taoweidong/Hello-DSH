@@ -1,6 +1,6 @@
 # 打包与离线安装指南
 
-> dsh-codehub-dashboard v0.1.0
+> dsh-codehub-dashboard v0.1.0 | 文档更新：2026-10-15
 
 ## 1. 打包
 
@@ -11,22 +11,24 @@ cd dsh-codehub-dashboard
 npm pack
 ```
 
-产出文件：`dsh-codehub-dashboard-0.1.0.tgz`（约 37 KB）
+产出文件：`dsh-codehub-dashboard-0.1.0.tgz`（约 62 KB，解包后约 197 KB，共 9 个文件）
 
 包含的文件由 `package.json` 的 `files` 字段控制：
 
 | 文件 | 大小 | 说明 |
 |------|------|------|
-| `index.js` | 46 KB | Host half（gh CLI / HTTP / git providers + routes） |
-| `web/index.html` | 57 KB | Dashboard SPA（vanilla JS + SVG charts） |
-| `client.js` | 4.3 KB | Client half（betterSidebar tab 注册） |
-| `package.json` | 1.5 KB | 插件清单 |
+| `index.js` | 70.2 KB | Host half（gh / HTTP / git provider + 缓存聚合 + 路由与鉴权栅栏） |
+| `workflows.js` | 26.3 KB | 原生模型检视、COMMENT 发布、Issue 开发会话、审计持久化 |
+| `web/index.html` | 84.7 KB | Dashboard SPA（vanilla JS + 内联 CSS/SVG，7 个视图） |
+| `client.js` | 5.0 KB | Client half（原生 `slots` 左导航注册 + 受限宿主桥接） |
+| `package.json` | 1.6 KB | 插件清单 |
 | `cordis.patch.yml` | 509 B | DSH bundle patch |
 | `icon.svg` | 638 B | 插件图标 |
-| `README.md` | 6.2 KB | 使用文档 |
+| `README.md` | 6.9 KB | 使用文档 |
 | `LICENSE` | 1.1 KB | MIT 许可证 |
 
 > ⚠️ `docs/` 和 `scripts/` 目录**不包含**在打包产物中（未在 `files` 字段中声明）。如需分发文档，请单独提供或添加到 `files` 数组。
+> 运行时依赖为零；`eslint` 仅出现在 `devDependencies`，不进入产物。
 
 ### 1.2 验证打包内容
 
@@ -117,10 +119,12 @@ Write-Host "Has BOM: $($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2]
 
 | 依赖 | 最低版本 | 检查命令 | 说明 |
 |------|---------|---------|------|
-| DSH | ≥ 0.1.0-rc.6 | `dsh --version` | 推荐 0.2.0-rc.1+ |
-| dsh-better-sidebar | ≥ 0.19.0 | DSH Plugins 页面查看 | 提供侧边栏 tab 注册服务 |
-| gh CLI | ≥ 2.0 | `gh --version` | 主数据源，需 `gh auth login` |
+| DSH | ≥ 0.2.0-rc.2（< 0.3.0） | `dsh --version` | 需要原生 `slots` / `layout` / `uiWorkspace` / `connection` 服务 |
+| gh CLI | ≥ 2.0 | `gh --version` | 主数据源，需 `gh auth login`；也可只用实例 token |
 | Node.js | ≥ 18 | `node --version` | DSH 运行时要求 |
+
+> **不需要 dsh-better-sidebar**。早期草案依赖它注册标签页，现版本直接注入 DSH 原生 slots（左侧导航 `sidebar.panellist` + 主区 `main`）。
+> AI 检视与 Issue 开发为可选能力：宿主缺少 `llm`/`sessions`/`sessionController` 时对应按钮禁用，看板本身不受影响。
 
 ### gh CLI 认证
 
@@ -145,6 +149,8 @@ dsh plugin --profile desktop remove dsh-codehub-dashboard
 
 或手动：从 `~/.dsh/profiles/desktop/package.json` 中移除 dependency 和 bundle entry，删除 node_modules 中的插件目录，重启 DSH。
 
+卸载**不会删除数据文件**：`~/.dsh/codehub-dashboard/config.json`（含明文 token）与 `config.json.workflows.json`（含代码、Issue 正文与模型输入输出）需按需自行安全删除或归档。
+
 ---
 
 ## 5. 升级
@@ -167,9 +173,14 @@ dsh plugin --profile desktop add ./dsh-codehub-dashboard-0.1.1.tgz
 
 | 问题 | 原因 | 解决 |
 |------|------|------|
-| 标签页不出现 | 插件未加载 | 重启 DSH + 硬刷新 |
+| 左侧导航无 CodeHub 入口 | 插件未加载，或宿主 < 0.2.0-rc.2 无原生 slots | 重启 DSH + 硬刷新；确认 bundles 含 `dsh-codehub-dashboard` |
+| 所有请求 503 | `connection` 服务不可用（DSH 原生鉴权异常） | 检查 DSH 启动日志，重新登录宿主 |
+| 401 / 登录已失效 | `ctx.connection.admit` 拒绝 | 从 DSH 内重新打开页面 |
 | 所有插件消失 | package.json 有 BOM | 用 Node.js 重写 package.json（无 BOM） |
 | `SyntaxError: Unexpected token ''` | package.json BOM | 同上 |
-| 仓库全部报错 | gh 未登录 | `gh auth login` |
-| 数据不更新 | 缓存 TTL | 调小 pollMinutes 或手动刷新 |
+| 仓库全部报错 | gh 未登录 | `gh auth login`，或为实例配置 token 走 HTTP |
+| AI 检视按钮禁用 | `capabilities.ai=false` 或未配置 provider/model | 设置页选择宿主模型；确认宿主提供 `llm`/`sessions` |
+| 开始开发失败 | 未绑定本地克隆或 origin 与仓库不一致 | 设置页绑定对应本地目录（会校验 origin） |
+| 发布提示需核实 | `publish_unknown`（远端结果不确定） | 先到 GitHub 确认评论，不要直接重发 |
+| 数据不更新 | 缓存 TTL | 调小 pollMinutes 或点击刷新 |
 | `/codehub/api` 返回 404 | Host half 未加载 | 检查 DSH 启动日志，确认插件在 bundles 列表中 |

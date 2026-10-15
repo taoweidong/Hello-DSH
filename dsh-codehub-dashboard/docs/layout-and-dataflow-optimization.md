@@ -1,5 +1,7 @@
 # 布局与数据获取流程优化方案（2026-10-15）
 
+> **状态：提案，未实施。** 除 D4 外（见文末「实施状态」），本文所有 D/L 项在当前代码中**都没有落地**，请勿据此认为功能已存在。
+>
 > 范围：`web/index.html`（SPA 布局与交互）、`index.js`（provider 调度 / 缓存 / 聚合）。
 > 基线：`b776022` 之后的最新代码（gh 扁平字段契约、CI 上提 list、行内评论走 gh api、ensureBoot promise 化均已落地，本方案不重复这些点）。
 > 方法：调用链追踪 + 渲染路径推演 + DOM 成本估算。
@@ -94,3 +96,27 @@ SPA op=summary（badge 60s） ──► cached() ──► buildOverview 全量�
 - **HTTP provider 的 CI 状态**：需每 PR +1 请求（`/check-runs`），detailLimit 25 → 每仓库 +25 请求，代价过大；UI 显示 "CI —" 为诚实降级。
 - **list 阶段裁剪重字段**（additions/deletions/changedFiles）：gh 单次 GraphQL 返回，字段成本可忽略，拆字段反而增加一次调用。
 - **虚拟滚动替换为分页**：分页改变 URL 语义与「一屏纵览」心智，窗口化保留全量滚动语义，优先。
+
+## 7. 实施状态（2026-10-15 复核）
+
+| ID | 状态 | 说明 |
+|----|------|------|
+| D1 派生 memo | **未实施** | `buildOverview` 仍在每个 op 内重算（`index.js:991` `overviewFrom` 直调） |
+| D2 两阶段快照 | **未实施** | 快照仍是 list（+ 预算内 detail）一次成型；详情改由 `op=mr` / `op=reviews` 按需拉取，属另一种取舍而非本方案 |
+| D3 快照持久化 | **决定不做** | 见 [design.md](design.md) §12：重启即重拉，避免陈旧数据被误读为实时状态 |
+| D4 gh 快速失败 | **已实现（等效）** | `refreshAll` 每轮只探测一次 `ghAvailable`（5min 缓存），`planSource` 在 `ghOk=false` 时直接走 http/error，不逐仓库试 gh；`invalidate()` 一并重置探测缓存 |
+| D5 瞬时重试 | **未实施** | 一次失败即进 fallback 链 |
+| D6 REST 条件请求 | **未实施** | `httpJson` 无 `If-None-Match` |
+| D7 detail 预算统一 | **未实施** | gh 与按需详情仍读 `cfg.http.detailLimit`，命名空间未上提 |
+| L1 列表窗口化 | **未实施** | MR 列表仍全量渲染 |
+| L2 骨架屏 | **未实施** | 仍为文本加载态 |
+| L3 图表 memo | **未实施** | 每次 render 重算 SVG |
+| L4 窄屏适配 | **未实施** | 无 ≤560px 断点专项 |
+| L5 收件箱分组折叠 | **未实施** | 仍全量展开（分组结构存在，折叠态没有） |
+| L6 紧凑密度 | **未实施** | |
+| L7 键盘导航 | **未实施** | 抽屉内仅有 Esc 关闭与 Tab 焦点循环，无 j/k、Enter、`/`、`g+` 序列 |
+
+本文与当前实现的偏差还需注意两点：
+
+1. **badge 轮询已随原生 slots 迁移而移除** —— `client.js` 不再注册 tab/badge，SPA 也不调用 `op=summary`，因此 B3（badge 走全量聚合）与「每 60s 一次全量计算」的前提不再成立；`op=summary` 仍保留，供外部集成与开发调试使用。
+2. **本方案未覆盖的诚实性改造已落地**（列表三态失败、`partialErrors`、`coverageNote`、`detailErrors`、路由 generation 守卫），见 [design.md](design.md) §9.2–9.3。
