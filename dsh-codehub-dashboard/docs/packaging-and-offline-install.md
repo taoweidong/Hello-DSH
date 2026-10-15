@@ -1,6 +1,6 @@
 # 打包与离线安装指南
 
-> dsh-codehub-dashboard v0.1.0 | 文档更新：2026-10-15
+> dsh-codehub-dashboard v0.1.0 | 文档更新：2026-10-16
 
 ## 1. 打包
 
@@ -11,7 +11,7 @@ cd dsh-codehub-dashboard
 npm pack
 ```
 
-产出文件：`dsh-codehub-dashboard-0.1.0.tgz`（约 62 KB，解包后约 197 KB，共 9 个文件）
+产出文件：`dsh-codehub-dashboard-0.1.0.tgz`（约 63 KB，解包后约 198 KB，共 9 个文件）
 
 包含的文件由 `package.json` 的 `files` 字段控制：
 
@@ -24,7 +24,7 @@ npm pack
 | `package.json` | 1.6 KB | 插件清单 |
 | `cordis.patch.yml` | 509 B | DSH bundle patch |
 | `icon.svg` | 638 B | 插件图标 |
-| `README.md` | 6.9 KB | 使用文档 |
+| `README.md` | 8.4 KB | 使用文档 |
 | `LICENSE` | 1.1 KB | MIT 许可证 |
 
 > ⚠️ `docs/` 和 `scripts/` 目录**不包含**在打包产物中（未在 `files` 字段中声明）。如需分发文档，请单独提供或添加到 `files` 数组。

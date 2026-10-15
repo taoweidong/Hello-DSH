@@ -2,6 +2,7 @@
 
 > 范围：`index.js`（host 半）、`web/index.html`（SPA）、`client.js`。审查方式：全文通读 + 数据流追踪 + 渲染路径推演。
 > 分级：P0 = 真 bug，必修；P1 = 高价值优化；P2 = 已知限制，记录不改。
+> 后续追加：「追加记录：原生契约复核（2026-10-15 第二轮）」、「追加记录：全量复验（2026-10-16）」。
 
 ## P0 真 bug（6 项）
 
@@ -86,3 +87,24 @@
 ### 复盘要点
 
 **测试 fixture 的签名宽松度就是 bug 的藏身度。** 一个接受单参数就返回成功的 mock，让「Issue 开发」这个核心卖点在整套绿色测试里活了很久。此后凡调用宿主方法，fixture 必须复刻已核实签名的** arity 与必填项**，并对必填对象做类型断言。
+
+## 追加记录：全量复验（2026-10-16）
+
+文档对齐并推送后重跑全量验证，并补上此前未复核的两件事。
+
+| 项目 | 结果 |
+|------|------|
+| `node --test …`（data/api/workflows/client） | 77 tests，77 pass，0 fail |
+| `node scripts/test-host.mjs` | 77 passed, 0 failed |
+| `npm run lint` | 0 error |
+| `npm pack --dry-run` | 9 文件，62.8 kB / 解包 198.3 kB |
+| 独立开发服务 | `node scripts/dev.mjs` 正常启动并服务 `/codehub/index.html`（200）、`op=boot`（含 `capabilities`）、非回环 Host 返回 403 |
+| 浏览器复验 SPA | 7 个视图（overview/mrs/issues/repos/stats/settings/reviews）均渲染出内容，无脚本异常 |
+
+- 此前报告的「`npm run dev` 以 exit 1 启动失败」**不是缺陷**：端口 4173 被上一轮遗留的 dev 进程占用，脚本在 0.13s 内打印 `listen EADDRINUSE: address already in use 127.0.0.1:4173` 后退出并清理临时配置。这是预期行为，处理方式在 README 已记录（`PORT` 覆盖）。**教训：把「疑似」写成结论之前先取一次现场证据**（`netstat` + 真实 stderr），否则会追一个不存在的问题。
+- 浏览器控制台唯一报错是两次 `op=models` 的 503——独立模式下没有原生 `llm` 目录，属预期降级，设置页对应提示「无法读取 DSH 模型：Required native service unavailable: llm model catalog」。原生模型目录、会话打开与工作区发现仍需**在真实 DSH 宿主内**验证，独立页面只能证明降级路径正确。
+- 复验同时暴露两处文档数字漂移（README 打包体积 6.9 KB→8.4 KB、产物 62.0→62.8 kB），已在 [打包与离线安装指南](./packaging-and-offline-install.md) 更正。
+
+### 复盘要点（本轮）
+
+**「疑似」不能当成结论上报。** 上一轮我把 dev 服务失败归为「疑似端口占用」就写进了交付说明，本轮才知道它既是事实（遗留进程占用 4173）也不是缺陷（脚本 0.13s 内打印 EADDRINUSE 并清理临时配置）。一条 `netstat` + 真实 stderr 就能定性，代价远小于让人去修一个不存在的问题。同理，**独立 dev 页面只能证明降级路径正确，不能替代真实宿主验证**——原生 `llm` 目录、会话打开与工作区发现仍需在 DSH 内跑一遍。
