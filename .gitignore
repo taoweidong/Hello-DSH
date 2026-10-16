@@ -8,6 +8,9 @@ package-lock.json
 # agent workspace (local tooling state, not project content)
 .workbuddy/
 
+# local ACL recovery tooling backups (machine-local, not project content)
+.acl-recovery/
+
 # build / test artifacts
 dist/
 *.log

@@ -50,7 +50,7 @@ async function main() {
 
   // Import and apply
   const mod = await import('../index.js')
-  assert('exports name', mod.name === 'codehub-dashboard', `got ${mod.name}`)
+  assert('exports name', mod.name === 'dsh-codehub-dashboard', `got ${mod.name}`)
   assert('exports inject requires webServer', mod.inject.required.includes('webServer'), `got ${JSON.stringify(mod.inject)}`)
   assert('exports apply', typeof mod.apply === 'function')
 
