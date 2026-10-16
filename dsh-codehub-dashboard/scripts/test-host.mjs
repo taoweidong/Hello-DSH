@@ -51,7 +51,13 @@ async function main() {
   // Import and apply
   const mod = await import('../index.js')
   assert('exports name', mod.name === 'dsh-codehub-dashboard', `got ${mod.name}`)
-  assert('exports inject requires webServer', mod.inject.required.includes('webServer'), `got ${JSON.stringify(mod.inject)}`)
+  // cordis contract: inject must be a FLAT required-service array. An object
+  // form is parsed as service names "required"/"optional" and the plugin never
+  // activates in the real host (this shipped once — the host boot log said
+  // "codehub-dashboard: pending (waiting for services: required, optional)").
+  assert('exports inject is a flat service array', Array.isArray(mod.inject), `got ${JSON.stringify(mod.inject)}`)
+  assert('exports inject requires webServer', mod.inject.includes('webServer'), `got ${JSON.stringify(mod.inject)}`)
+  assert('exports inject requires connection', mod.inject.includes('connection'), `got ${JSON.stringify(mod.inject)}`)
   assert('exports apply', typeof mod.apply === 'function')
 
   mod.apply(ctx, { configPath })

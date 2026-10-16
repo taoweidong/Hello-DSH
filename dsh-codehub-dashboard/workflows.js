@@ -288,20 +288,30 @@ async function reviewText(llm, options) {
 
 export function createWorkflows({ ctx, store, filePath, getPullRequest, getIssue, verifyLocalRepo, publishReview }) {
   const disk = persistence(filePath)
-  const aiAvailable = () => hasMethod(ctx?.llm, 'stream') && hasMethod(ctx?.sessions, 'create') && hasMethod(ctx?.sessions, 'flush')
-  const developAvailable = () => hasMethod(ctx?.sessionController, 'create') && hasMethod(ctx?.sessionController, 'prompt') && typeof verifyLocalRepo === 'function'
+  // Soft-dependency probe. The cordis contract only supports a flat required
+  // `inject` array: accessing an un-injected service via property (ctx.llm)
+  // THROWS "cannot get property ... without inject" in the real host. Use
+  // ctx.get(name, false) (returns undefined for absent services) and fall back
+  // to plain property access for test mocks that are ordinary objects.
+  const service = (name) => {
+    if (typeof ctx?.get === 'function') return ctx.get(name, false) ?? undefined
+    return ctx?.[name]
+  }
+  const aiAvailable = () => hasMethod(service('llm'), 'stream') && hasMethod(service('sessions'), 'create') && hasMethod(service('sessions'), 'flush')
+  const developAvailable = () => hasMethod(service('sessionController'), 'create') && hasMethod(service('sessionController'), 'prompt') && typeof verifyLocalRepo === 'function'
 
   function capabilities() {
     return { ai: aiAvailable(), develop: developAvailable() }
   }
 
   async function models() {
-    requireService(hasMethod(ctx?.llm, 'listProviders') && hasMethod(ctx?.llm, 'listModels'), 'llm model catalog')
+    const llm = service('llm')
+    requireService(hasMethod(llm, 'listProviders') && hasMethod(llm, 'listModels'), 'llm model catalog')
     try {
-      const providers = await ctx.llm.listProviders()
+      const providers = await llm.listProviders()
       return { providers: await Promise.all(providers.map(async provider => ({
         id: provider.id, name: provider.name,
-        models: (await ctx.llm.listModels(provider.id)).map(model => ({ id: model.id, name: model.name })),
+        models: (await llm.listModels(provider.id)).map(model => ({ id: model.id, name: model.name })),
       }))) }
     } catch (error) { throw serviceError(error, 'Native model catalog is unavailable') }
   }
@@ -335,7 +345,9 @@ export function createWorkflows({ ctx, store, filePath, getPullRequest, getIssue
         id, repoKey, number, headSha: data.mr.headSha, body: '', status: 'generating', createdAt: now(),
         sessionId, input: snapshot, diffTruncated: snapshot.diffTruncated, inputTruncated: snapshot.inputTruncated,
       }))
-      const session = await ctx.sessions.create(sessionId, { meta: {} })
+      const sessions = service('sessions')
+      requireService(hasMethod(sessions, 'create') && hasMethod(sessions, 'flush'), 'sessions.create/flush')
+      const session = await sessions.create(sessionId, { meta: {} })
       requireService(hasMethod(session, 'append') && hasMethod(session, 'deriveMessages'), 'session.append/deriveMessages')
       // The official session-title producer logs the exact auxiliary request before
       // streaming. Here both prompts use native surface events and the canonical
@@ -349,8 +361,8 @@ export function createWorkflows({ ctx, store, filePath, getPullRequest, getIssue
       session.append('request/header', { reason: 'initial', header: { config } })
       const request = freezeJson(clone({ ...config, messages: session.deriveMessages(), sessionId, purpose: 'codehub-review' }))
       disk.update(state => { findDraft(state, id).request = request })
-      await ctx.sessions.flush(session)
-      const output = await reviewText(ctx.llm, Object.freeze({ ...request, signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS) }))
+      await sessions.flush(session)
+      const output = await reviewText(service('llm'), Object.freeze({ ...request, signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS) }))
       // This is an auxiliary review, not an Agent turn: its result/failure lives in
       // the durable artifact, not a fabricated assistant settlement with turn ids.
       return disk.update(state => {
@@ -471,9 +483,11 @@ export function createWorkflows({ ctx, store, filePath, getPullRequest, getIssue
       // Installed host contract: prompt(request, signal) dereferences signal, and
       // the signal only bounds pre-admission work, so a timed-out admission keeps
       // the association pending and the same requestId on retry.
-      const created = await ctx.sessionController.create({ cwd: association.cwd, sessionId: association.sessionId })
+      const controller = service('sessionController')
+      requireService(hasMethod(controller, 'create') && hasMethod(controller, 'prompt'), 'sessionController.create/prompt')
+      const created = await controller.create({ cwd: association.cwd, sessionId: association.sessionId })
       if (created?.sessionId !== association.sessionId) throw fail(503, 'Native session controller returned an unexpected session identity')
-      const accepted = await ctx.sessionController.prompt({ sessionId: association.sessionId, requestId: association.requestId, content: [{ type: 'text', text: association.context }], mode: 'followup' }, AbortSignal.timeout(PROMPT_TIMEOUT_MS))
+      const accepted = await controller.prompt({ sessionId: association.sessionId, requestId: association.requestId, content: [{ type: 'text', text: association.context }], mode: 'followup' }, AbortSignal.timeout(PROMPT_TIMEOUT_MS))
       if (accepted?.accepted !== true) throw fail(503, 'Native session controller did not acknowledge the issue prompt')
       disk.update(state => { find(state).status = 'ready' })
       return { sessionId: association.sessionId, reused }

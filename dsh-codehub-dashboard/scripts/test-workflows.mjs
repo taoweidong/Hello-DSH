@@ -103,6 +103,15 @@ function fixture(t) {
         return { accepted: true }
       },
     },
+    // Real cordis contexts expose soft dependencies through ctx.get(name, false)
+    // (undefined when absent); property access THROWS for un-injected services.
+    // Mirror that contract here so the soft-dependency probe is covered.
+    get(name, strict = true) {
+      const svc = { sessions: ctx.sessions, llm: ctx.llm, sessionController: ctx.sessionController }[name]
+      if (svc) return svc
+      if (strict) throw new Error(`cannot get property "${name}" without inject`)
+      return undefined
+    },
   }
   const dependencies = {
     ctx, store: { get: () => config }, filePath,

@@ -38,7 +38,13 @@ const FETCH_CONCURRENCY = 3
 const DAY_MS = 86_400_000
 
 export const name = 'dsh-codehub-dashboard'
-export const inject = { required: ['webServer', 'connection'], optional: ['llm', 'sessions', 'sessionController'] }
+// cordis contract: `inject` is a FLAT required-service array (see better-sidebar:
+// export const inject = ['webServer', 'sessions', 'webRuntime', 'tools']).
+// An object form ({required, optional}) is parsed as two service NAMES called
+// "required"/"optional" and the plugin stays pending forever in the real host.
+// Optional native services (llm/sessions/sessionController) are probed at
+// runtime via ctx.get(name, false) inside workflows.js.
+export const inject = ['webServer', 'connection']
 
 /* ===================== generic helpers ===================== */
 
