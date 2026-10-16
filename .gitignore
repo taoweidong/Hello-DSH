@@ -5,6 +5,11 @@ node_modules/
 package-lock.json
 *.tgz
 
+# delivery artifacts archive: keep the folder (README.md is tracked),
+# but never the packed archives themselves
+releases/*
+!releases/README.md
+
 # agent workspace (local tooling state, not project content)
 .workbuddy/
 

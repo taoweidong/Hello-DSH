@@ -25,9 +25,12 @@
 ```bash
 cd dsh-codehub-dashboard
 npm pack          # 产出 ./dsh-codehub-dashboard-0.1.0.tgz
+mv dsh-codehub-dashboard-*.tgz ../releases/   # 归档到仓库根 releases/，保持根目录整洁
 ```
 
 本机实测：`62,773` 字节，`npm pack --dry-run` 报 **9 个文件、package size 62.8 kB、unpacked size 198.3 kB**。归档根为 `package/`（npm 规范前缀）。
+
+> 打包产物统一归档到仓库根 [releases/](../../releases/) 目录（目录内有版本清单），不留在插件目录或仓库根。`releases/*.tgz` 已被 `.gitignore` 排除，交付时按需单独拷贝。
 
 内容清单由 `package.json` 的 `files` 字段决定：
 

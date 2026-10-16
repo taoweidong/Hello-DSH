@@ -2,6 +2,15 @@
 
 DSH（DeepSeek Harness）插件实验仓库。当前收录一个插件：
 
+## 📂 目录结构
+
+| 目录 | 内容 |
+|------|------|
+| `dsh-codehub-dashboard/` | 插件源码（host 半 + SPA + 测试 + 文档） |
+| `releases/` | 交付件归档（npm pack 产物，不纳入版本控制） |
+| `.github/workflows/` | CI（node 18/20/22 矩阵跑 lint + test） |
+| `AGENTS.md` | 贡献者契约：**测试全绿方可提交推送** |
+
 ## 📦 插件列表
 
 | 插件 | 说明 | 状态 |
