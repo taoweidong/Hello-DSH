@@ -281,8 +281,16 @@ function ghEnv(cfg, instanceId) {
 // fails identically whether or not the user is authenticated. gh already
 // returns these fields as fully-formed objects, so no mapping change is needed.
 // Field names verified against the available-fields dump of gh 2.102.0
-// (`gh pr list --json ___` prints it); `statusCheckRollup` is valid for BOTH
-// `pr list` and `pr view`, so CI state does not need the per-PR `pr view` call.
+// (`gh pr list --json ___` prints it).
+//
+// `statusCheckRollup` is deliberately NOT part of the list payload. Measured
+// against cli/cli with gh 2.102.0: `--state all --limit 200` including the
+// rollup fails with HTTP 502/504 from the GraphQL gateway (deterministic from
+// ~80 items, succeeds at 60), because the rollup resolves every check run of
+// every PR in one request. The same 200 items without it succeed at ~446 KB.
+// CI state therefore comes from a separate bounded query,
+// `--state open --json number,statusCheckRollup` (~209 KB for 69 open PRs,
+// succeeds). Merged/closed PRs keep no rollup and map to `unknown`.
 const GH_PR_COMMON_FIELDS = [
   'number','title','state','isDraft','headRefName','baseRefName',
   'createdAt','updatedAt','mergedAt','additions','deletions','changedFiles',
@@ -290,8 +298,12 @@ const GH_PR_COMMON_FIELDS = [
   'author','labels','reviewRequests',
   'statusCheckRollup',
 ]
-const GH_PR_LIST_FIELDS = [...GH_PR_COMMON_FIELDS, 'latestReviews'].join(',')
+const GH_PR_LIST_FIELDS = [...GH_PR_COMMON_FIELDS.filter(f => f !== 'statusCheckRollup'), 'latestReviews'].join(',')
+const GH_PR_CI_FIELDS = 'number,statusCheckRollup'
 const GH_PR_VIEW_FIELDS = [...GH_PR_COMMON_FIELDS, 'reviews','comments', 'body', 'headRefOid', 'baseRefOid'].join(',')
+const GH_PR_LIST_LIMIT = 200
+const GH_ISSUE_LIMIT = 200
+const GH_REPO_FIELDS = 'defaultBranchRef,name,description'
 const GH_ISSUE_FIELDS = 'number,title,body,state,author,assignees,labels,createdAt,updatedAt,closedAt,url'
 
 function parseGhPages(stdout) {
@@ -371,9 +383,9 @@ function mapGhPr(raw) {
     createdAt: isoOr(c.createdAt, raw.updatedAt),
     resolved: null, kind: 'conversation',
   }))
-  // `statusCheckRollup` is requested on the list call itself, so CI state is
-  // available for every PR — not only the ones that later get `pr view` detail.
-  const ciState = ghCiState(raw?.statusCheckRollup)
+  // An absent rollup means it was never queried (see GH_PR_LIST_FIELDS), which
+  // is not the same claim as an empty rollup — "the repo has no checks".
+  const ciState = raw?.statusCheckRollup === undefined ? 'unknown' : ghCiState(raw.statusCheckRollup)
   return {
     number: Number(raw?.number) || 0, title: String(raw?.title ?? ''), author, state,
     draft: !!raw?.isDraft, sourceBranch: raw?.headRefName ?? '', targetBranch: raw?.baseRefName ?? '',
@@ -388,29 +400,68 @@ function mapGhPr(raw) {
   }
 }
 
+/**
+ * Repository display metadata from `gh repo view`. The base branch of the most
+ * recently updated PR is not the default branch — measured on cli/cli, where it
+ * reported a contributor's `topic/branch` while the real default is `trunk`.
+ * Failure is soft: the snapshot must not be lost over a badge, and an unknown
+ * branch stays empty so git enrichment and the UI can say 未知.
+ */
+async function ghRepoView(repo, runGh, exe, env) {
+  const fallback = { defaultBranch: repo.defaultBranch || '', description: `GitHub 仓库 ${repo.path}` }
+  const res = await runGh(exe, ['repo', 'view', repo.path, '--json', GH_REPO_FIELDS], { env })
+  if (res.code !== 0) return fallback
+  let meta = null
+  try { meta = JSON.parse(res.stdout) } catch { return fallback }
+  if (!meta || typeof meta !== 'object') return fallback
+  return {
+    defaultBranch: repo.defaultBranch || String(meta.defaultBranchRef?.name ?? ''),
+    description: clip(String(meta.description ?? ''), 200) || fallback.description,
+  }
+}
+
+async function ghPrListRows(runGh, exe, env, repoPath, limit = GH_PR_LIST_LIMIT) {
+  const listRes = await runGh(exe, [
+    'pr', 'list', '--repo', repoPath, '--state', 'all', '--limit', String(limit),
+    '--json', GH_PR_LIST_FIELDS,
+  ], { env })
+  let rows = null
+  if (listRes.code === 0) { try { rows = JSON.parse(listRes.stdout) } catch { /* fall through */ } }
+  if (!Array.isArray(rows)) throw new Error(clip(listRes.stderr || listRes.stdout || 'gh pr list 失败', 400))
+
+  const ciRes = await runGh(exe, [
+    'pr', 'list', '--repo', repoPath, '--state', 'open', '--limit', String(limit),
+    '--json', GH_PR_CI_FIELDS,
+  ], { env })
+  let ciOk = false
+  const ciByNumber = new Map()
+  if (ciRes.code === 0) {
+    try {
+      const ciRows = JSON.parse(ciRes.stdout)
+      if (Array.isArray(ciRows)) {
+        ciOk = true
+        for (const row of ciRows) if (row?.number != null) ciByNumber.set(Number(row.number), row.statusCheckRollup ?? [])
+      }
+    } catch { /* treat as unavailable */ }
+  }
+  const merged = ciOk
+    ? rows.map(row => { const n = Number(row?.number); return ciByNumber.has(n) ? { ...row, statusCheckRollup: ciByNumber.get(n) } : row })
+    : rows
+  return { rows: merged, prLimit: limit, ciCoverage: ciOk ? 'open' : 'unavailable' }
+}
+
 async function ghSnapshot(repo, cfg) {
   if (!isSafeRepoPath(repo.path)) throw new Error(`仓库路径不合法（需 owner/name）：${clip(repo.path, 80)}`)
   const exe = ghExecutable(cfg)
   const env = ghEnv(cfg, repo.instanceId)
   const t0 = Date.now()
 
-  // List PRs (all states)
-  const listRes = await run(exe, [
-    'pr', 'list', '--repo', repo.path, '--state', 'all', '--limit', '200',
-    '--json', GH_PR_LIST_FIELDS,
-  ], { env })
-  let rawList = null
-  if (listRes.code === 0) {
-    try { rawList = JSON.parse(listRes.stdout) } catch { /* fall through */ }
-  }
-  if (!Array.isArray(rawList)) {
-    throw new Error(clip(listRes.stderr || listRes.stdout || 'gh pr list 失败', 400))
-  }
-
-  const mrs = rawList.map(mapGhPr)
+  const { rows, prLimit, ciCoverage } = await ghPrListRows(run, exe, env, repo.path)
+  const mrs = rows.map(mapGhPr)
+  const meta = await ghRepoView(repo, run, exe, env)
 
   let issues = [], issueError = null
-  const issueRes = await run(exe, ['issue', 'list', '--repo', repo.path, '--state', 'all', '--limit', '200', '--json', GH_ISSUE_FIELDS], { env })
+  const issueRes = await run(exe, ['issue', 'list', '--repo', repo.path, '--state', 'all', '--limit', String(GH_ISSUE_LIMIT), '--json', GH_ISSUE_FIELDS], { env })
   try {
     if (issueRes.code !== 0) throw new Error(issueRes.stderr || 'Issue 拉取失败')
     issues = JSON.parse(issueRes.stdout).map(mapGhIssue)
@@ -421,10 +472,18 @@ async function ghSnapshot(repo, cfg) {
     repoKey: repo.key, source: 'gh', fetchedAt: new Date().toISOString(), error: null, elapsedMs: Date.now() - t0,
     repo: {
       key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path,
-      defaultBranch: mrs.find((m) => m.targetBranch)?.targetBranch || repo.defaultBranch || 'main',
-      description: `GitHub 仓库 ${repo.path}`, demo: false,
+      defaultBranch: meta.defaultBranch,
+      description: meta.description, demo: false,
     },
-    mrs, issues, issueError, coverage: { limited: mrs.length >= 200 || issues.length >= 200, details: 'on-demand' },
+    mrs, issues, issueError,
+    degradedNote: ciCoverage === 'unavailable' ? 'CI 状态查询失败（GitHub GraphQL 返回 5xx），本次所有 PR 的 CI 显示为未查询。' : null,
+    coverage: {
+      limited: mrs.length >= prLimit || issues.length >= GH_ISSUE_LIMIT,
+      details: 'on-demand', ci: ciCoverage,
+      note: ciCoverage === 'open'
+        ? `最多 ${prLimit} 条 PR / Issue；CI 状态仅查询未合并的 PR，已合并或关闭的历史 PR 显示为未查询。`
+        : `最多 ${prLimit} 条 PR / Issue；本次未获取任何 CI 状态。`,
+    },
   }
 }
 
@@ -579,7 +638,7 @@ function mapGithubPr(pr) {
     additions: Number(pr?.additions) || 0, deletions: Number(pr?.deletions) || 0,
     changedFiles: Number(pr?.changed_files) || 0,
     labels: (pr?.labels ?? []).map((l) => l?.name).filter(Boolean),
-    ciState: 'none', reviewDecision: 'none',
+    ciState: 'unknown', reviewDecision: 'none',
     requestedReviewers: (pr?.requested_reviewers ?? []).map((r) => r?.login).filter(Boolean),
     reviews: [], comments: [], url: String(pr?.html_url ?? ''),
   }
@@ -609,7 +668,7 @@ async function httpSnapshot(repo, cfg) {
     repoKey: repo.key, source: 'http', fetchedAt: new Date().toISOString(), error: null, elapsedMs: Date.now() - t0,
     repo: {
       key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path,
-      defaultBranch: mrs.find((m) => m.targetBranch)?.targetBranch || repo.defaultBranch || 'main',
+      defaultBranch: repo.defaultBranch || '',
       description: `GitHub 仓库 ${repo.path}（REST API）`, demo: false, instanceId: inst.id,
     },
     mrs, issues, issueError, coverage: { limited: true, details: 'on-demand' },
@@ -674,9 +733,9 @@ function createFetcher(store, log) {
       if (planned === 'gh') snapshot = await ghSnapshot(repo, cfg)
       else if (planned === 'http') snapshot = await httpSnapshot(repo, cfg)
       else if (planned === 'git-meta') {
-        snapshot = { repoKey: repo.key, source: 'git-meta', fetchedAt: new Date().toISOString(), error: 'git 数据源仅提供仓库元信息，MR 数据需要 gh CLI 或 HTTP token', repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || 'main', description: '', demo: false }, mrs: [] }
+        snapshot = { repoKey: repo.key, source: 'git-meta', fetchedAt: new Date().toISOString(), error: 'git 数据源仅提供仓库元信息，MR 数据需要 gh CLI 或 HTTP token', repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || '', description: '', demo: false }, mrs: [] }
       } else {
-        snapshot = { repoKey: repo.key, source: 'error', fetchedAt: new Date().toISOString(), error: '无可用数据源：请安装并登录 gh CLI（gh auth login），或在设置中配置 HTTP token', repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || 'main', description: '', demo: false }, mrs: [] }
+        snapshot = { repoKey: repo.key, source: 'error', fetchedAt: new Date().toISOString(), error: '无可用数据源：请安装并登录 gh CLI（gh auth login），或在设置中配置 HTTP token', repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || '', description: '', demo: false }, mrs: [] }
       }
     } catch (err) {
       const msg = clip(err?.message ?? String(err), 400)
@@ -685,12 +744,12 @@ function createFetcher(store, log) {
         const inst = instanceOf(cfg, repo.instanceId)
         if (inst?.token) {
           try { snapshot = await httpSnapshot(repo, cfg); snapshot.degradedNote = `gh 失败（${msg}），已降级为 HTTP API` }
-          catch { snapshot = { repoKey: repo.key, source: 'error', fetchedAt: new Date().toISOString(), error: msg, repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || 'main', description: '', demo: false }, mrs: [] } }
+          catch { snapshot = { repoKey: repo.key, source: 'error', fetchedAt: new Date().toISOString(), error: msg, repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || '', description: '', demo: false }, mrs: [] } }
         } else {
-          snapshot = { repoKey: repo.key, source: 'error', fetchedAt: new Date().toISOString(), error: msg, repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || 'main', description: '', demo: false }, mrs: [] }
+          snapshot = { repoKey: repo.key, source: 'error', fetchedAt: new Date().toISOString(), error: msg, repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || '', description: '', demo: false }, mrs: [] }
         }
       } else {
-        snapshot = { repoKey: repo.key, source: 'error', fetchedAt: new Date().toISOString(), error: msg, repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || 'main', description: '', demo: false }, mrs: [] }
+        snapshot = { repoKey: repo.key, source: 'error', fetchedAt: new Date().toISOString(), error: msg, repo: { key: repo.key, name: repoName(repo.path), owner: repoOwner(repo.path), path: repo.path, defaultBranch: repo.defaultBranch || '', description: '', demo: false }, mrs: [] }
       }
       log?.warn?.(`[codehub] repo ${repo.key}: ${snapshot.degradedNote ?? msg}`)
     }
@@ -858,7 +917,7 @@ function buildOverview(snapshots, cfg) {
   }
   const coverage = {
     limited: snapshots.some(s => s.coverage?.limited || s.error || s.issueError || s.stale),
-    note: '统计基于已同步样本：gh 每仓库最多 200 条 PR / Issue，HTTP 为首批结果；意见按需加载，未获取的线程解决状态不计为未解决。不是完整历史统计。',
+    note: '统计基于已同步样本：gh 每仓库最多 200 条 PR / Issue，HTTP 为首批结果；CI 状态仅覆盖未合并的 PR，历史 PR 显示为未查询；意见按需加载，未获取的线程解决状态不计为未解决。不是完整历史统计。',
   }
   return { summary, repos, statusDist, activity, topReviewers, coverage, recent: events.slice(0, 24), generatedAt: new Date().toISOString() }
 }
@@ -1184,7 +1243,8 @@ export function apply(ctx, loaderConfig = {}) {
  */
 export const __test = {
   mapGhPr, ghCiState, isSafeRepoPath, isSafeHost, apiBaseFor,
-  GH_PR_LIST_FIELDS, GH_PR_VIEW_FIELDS, GH_ISSUE_FIELDS,
+  GH_PR_LIST_FIELDS, GH_PR_VIEW_FIELDS, GH_ISSUE_FIELDS, GH_PR_CI_FIELDS, GH_REPO_FIELDS,
+  ghPrListRows, ghRepoView,
   mapGhIssue, parseGhPages, ghEnv, decorate, buildOverview, mergeRepos, run,
   createFetcher, createConfigStore, githubRequest, pullDetail, issueDetail,
 }

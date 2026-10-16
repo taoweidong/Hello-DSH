@@ -2,7 +2,7 @@
 
 > 范围：`index.js`（host 半）、`web/index.html`（SPA）、`client.js`。审查方式：全文通读 + 数据流追踪 + 渲染路径推演。
 > 分级：P0 = 真 bug，必修；P1 = 高价值优化；P2 = 已知限制，记录不改。
-> 后续追加：「追加记录：原生契约复核（2026-10-15 第二轮）」、「追加记录：全量复验（2026-10-16）」。
+> 后续追加：「追加记录：原生契约复核（2026-10-15 第二轮）」、「追加记录：全量复验（2026-10-16）」、「追加记录：真实凭据全链路测试（2026-10-16 第三轮）」。
 
 ## P0 真 bug（6 项）
 
@@ -108,3 +108,42 @@
 ### 复盘要点（本轮）
 
 **「疑似」不能当成结论上报。** 上一轮我把 dev 服务失败归为「疑似端口占用」就写进了交付说明，本轮才知道它既是事实（遗留进程占用 4173）也不是缺陷（脚本 0.13s 内打印 EADDRINUSE 并清理临时配置）。一条 `netstat` + 真实 stderr 就能定性，代价远小于让人去修一个不存在的问题。同理，**独立 dev 页面只能证明降级路径正确，不能替代真实宿主验证**——原生 `llm` 目录、会话打开与工作区发现仍需在 DSH 内跑一遍。
+
+## 追加记录：真实凭据全链路测试（2026-10-16 第三轮）
+
+`gh auth login` 完成后，用真实 gh 凭据跑只读全链路（公开仓库 `cli/cli` + 本机仓库 + 一个故意不存在的仓库；**零 GitHub 写入、零模型调用**）。独立 dev 服务（`127.0.0.1:4174`）+ 真实 DSH 宿主（`127.0.0.1:19387`）双路验证。
+
+### 发现的真实缺陷
+
+| # | 位置 | 现象 | 根因 | 修复 |
+|---|------|------|------|------|
+| 1 | `ghSnapshot` PR 列表 | `cli/cli` 每仓库直接报错，看板空白；错误文案为 `HTTP 502/504 … (https://api.github.com/graphql)` | 硬编码 `--state all --limit 200` 且字段里带 `statusCheckRollup`。二分实测：200/100/80 稳定失败，60/50/20 成功；去掉 rollup 的 200 条成功（446 KB）；只查 rollup 的 200 条失败，只查 `latestReviews` 的成功——**成本项是 rollup 本身**，它会在一个 GraphQL 请求里展开全部 PR 的 check run | 列表主体不再申请 rollup；改为并行的 `--state open --json number,statusCheckRollup`（实测 69 个开放 PR ≈209 KB 成功），按 `number` 合并；未覆盖者 `ciState='unknown'` |
+| 2 | `ciState` 词表 | 已合并/关闭 PR 与 HTTP provider 显示「CI —」，等价于宣称「该仓库没有 check」 | `mapGhPr` 用同一个 `ghCiState(undefined) → 'none'` 表达了「没查」和「没有」两种事实 | 区分 `none`（字段存在且为空）与 `unknown`（字段缺失）；UI 虚线灰字「CI 未查询」+ title 说明范围 |
+| 3 | `repo.defaultBranch` | `cli/cli` 的「默认分支」显示为 `babakks/refresh-token-telemetry` | 取值顺序写成 `mrs.find(m => m.targetBranch) || repo.defaultBranch || 'main'`——把「最近一条 PR 的目标分支」当作仓库默认分支，且让组织发现来的 `default_branch` 与 git origin 富化永远不生效 | 新增 `ghRepoView()`（`gh repo view <path> --json defaultBranchRef,name,description`，软失败）取真实默认分支与描述；取不到留空，UI 显示「未知」，不再伪造 `'main'` |
+
+顺带修正：描述字段从模板串 `GitHub 仓库 cli/cli` 变成仓库真实描述。
+
+### 验证证据（全部为当轮实跑）
+
+| 项目 | 结果 |
+|------|------|
+| `npm run lint` | 0 error |
+| `node --test`（data/api/workflows/client） | 84 tests，84 pass，0 fail |
+| `node scripts/test-host.mjs` | 84 passed，0 failed（含新增 `pr list ci`/`repo view` 字段契约、`all-state list fields exclude statusCheckRollup`、`mapGhPr absent rollup is unknown`） |
+| 真实刷新 `op=refresh` | `cli/cli` 200 条 PR、24 开放、2 CI 失败、默认分支 `trunk`；故意错误的仓库单独报错，其余不受影响；耗时 25s |
+| `op=mrs&ci=` | `failure→2`、`success→21`、`unknown→176`，与开放 PR 数一致 |
+| `op=issues` / `op=reviews` / `op=activity` | 200 条 Issue；204 条意见（7.6s，含详情预算与「线程状态未知」提示）；30 天趋势 + 真实 topReviewers |
+| `op=mr` / `op=mr.diff` | 详情保留 `ci=failure`、head/base SHA；diff 65,551 字符、15 文件、未截断 |
+| `op=config.test` / `op=repos.discover` | git/gh 版本与登录态通过；本机工作区发现 `taoweidong/Hello-DSH` |
+| SPA 7 视图 | 真实数据全部渲染；CI 未查询 chip、`⑂ trunk`/`⑂ main`/`⑂ 未知`、部分失败提示均正确；控制台仅 `op=models` 的 503（独立模式无原生 `llm`，预期降级） |
+| 真实宿主鉴权栅栏 | 外部 `curl` 访问宿主端口返回 401（本项目错误文案），确认 `connection.admit` 栅栏在真宿主上生效 |
+
+### 尚未覆盖（需要授权或真实宿主）
+
+AI 评审草稿生成、COMMENT 发布、Issue → 原生开发会话：分别需要宿主原生 `llm`/`sessions`/`sessionController`，且前两者会产生**真实付费模型调用**与**真实 GitHub 评论**。本轮全部跳过，未做任何写操作。
+
+### 复盘要点（第三轮）
+
+**绿色测试挡不住「没测过的形状」。** 77 项单测 + 77 项集成全绿跑了很久，而 `--limit 200` 带 rollup 这条真实路径从来没被真实数据走过——fixture 里的 PR 列表只有几条，GraphQL 的上限问题在本地永远不会暴露。契约类外部限制（网关大小/超时）只能用真实对象测一次并写进文档，光靠字段名合法（`gh accepts our field list`）证明不了它可用。
+
+**冒充出来的字段比缺失的字段更糟。** `defaultBranch` 拿一条 PR 的 base 冒充、`ciState` 拿 `none` 冒充「没有 CI」，两处都不报错、都能渲染，只有接了真实仓库才看得出来。取不到就留空并显示「未知」，是把错误变成可诊断信息的最省钱做法。

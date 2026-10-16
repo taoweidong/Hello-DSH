@@ -28,7 +28,7 @@ npm pack          # 产出 ./dsh-codehub-dashboard-0.1.0.tgz
 mv dsh-codehub-dashboard-*.tgz ../releases/   # 归档到仓库根 releases/，保持根目录整洁
 ```
 
-本机实测：`62,773` 字节，`npm pack --dry-run` 报 **9 个文件、package size 62.8 kB、unpacked size 198.3 kB**。归档根为 `package/`（npm 规范前缀）。
+本机实测：`65,437` 字节，`npm pack --dry-run` 报 **9 个文件、package size 65.4 kB、unpacked size 207.4 kB**。归档根为 `package/`（npm 规范前缀）。
 
 > 打包产物统一归档到仓库根 [releases/](../../releases/) 目录（目录内有版本清单），不留在插件目录或仓库根。`releases/*.tgz` 已被 `.gitignore` 排除，交付时按需单独拷贝。
 
@@ -36,14 +36,14 @@ mv dsh-codehub-dashboard-*.tgz ../releases/   # 归档到仓库根 releases/，�
 
 | 文件 | 大小 | 说明 |
 |------|------|------|
-| `index.js` | 70.2 KB | Host half（gh / HTTP / git provider + 缓存聚合 + 路由与鉴权栅栏） |
-| `workflows.js` | 26.3 KB | 原生模型检视、COMMENT 发布、Issue 开发会话、审计持久化 |
-| `web/index.html` | 84.7 KB | Dashboard SPA（vanilla JS + 内联 CSS/SVG，7 个视图） |
+| `index.js` | 73.8 KB | Host half（gh / HTTP / git provider + 缓存聚合 + 路由与鉴权栅栏） |
+| `workflows.js` | 27.2 KB | 原生模型检视、COMMENT 发布、Issue 开发会话、审计持久化 |
+| `web/index.html` | 88.7 KB | Dashboard SPA（vanilla JS + 内联 CSS/SVG，7 个视图） |
 | `client.js` | 5.0 KB | Client half（原生 `slots` 左导航注册 + 受限宿主桥接） |
 | `package.json` | 1.6 KB | 插件清单（含 `dsh.bundle.patch` 声明） |
 | `cordis.patch.yml` | 509 B | DSH bundle patch |
 | `icon.svg` | 638 B | 插件图标 |
-| `README.md` | 8.4 KB | 使用文档 |
+| `README.md` | 8.8 KB | 使用文档 |
 | `LICENSE` | 1.1 KB | MIT 许可证 |
 
 > `docs/` 与 `scripts/` **不进产物**（未在 `files` 中声明）；需要交付文档请单独打包。

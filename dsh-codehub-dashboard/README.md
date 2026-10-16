@@ -41,6 +41,8 @@ dsh plugin --profile desktop add E:\GitHub\Hello-DSH\dsh-codehub-dashboard
 ## 数据范围与失败处理
 
 - GitHub CLI 每仓库最多同步 200 条 PR 和 200 条 Issue；HTTP 列表为配置大小的首批结果。统计仅基于已同步样本，不是完整历史统计。
+- CI 状态只查询**未合并**的 PR（200 条全状态 PR 带上 check rollup 会让 GitHub GraphQL 网关 502/504）；已合并/已关闭的历史 PR 显示为「CI 未查询」，与「CI 无 check」是两回事。该查询失败时只降级提示，不影响列表主体。
+- 仓库默认分支与描述来自 `gh repo view`；取不到时显示「未知」，不会用某条 PR 的目标分支冒充。
 - 组织仓库和按需评论使用分页；评论收件箱仍受每仓库 `http.detailLimit` 预算约束。
 - REST 评论不包含完整线程解决状态，未知状态显示为未知，**不计为未解决**。普通讨论评论也不自动计为未解决。
 - diff、模型输入和输出有大小限制；截断时明确提示检视范围有限。

@@ -172,13 +172,16 @@ async function main() {
   if (!ghAvailable) console.log('  ⏭  gh not installed — skipping field-contract and mapping checks')
   if (ghAvailable) {
     for (const [label, args, fields] of [
-      ['pr list', ['pr', 'list'], t.GH_PR_LIST_FIELDS],
-      ['pr view', ['pr', 'view', '1'], t.GH_PR_VIEW_FIELDS],
-      ['issue list', ['issue', 'list'], t.GH_ISSUE_FIELDS],
+      ['pr list', ['pr', 'list', '--repo', 'cli/cli'], t.GH_PR_LIST_FIELDS],
+      ['pr list ci', ['pr', 'list', '--repo', 'cli/cli'], t.GH_PR_CI_FIELDS],
+      ['pr view', ['pr', 'view', '1', '--repo', 'cli/cli'], t.GH_PR_VIEW_FIELDS],
+      ['issue list', ['issue', 'list', '--repo', 'cli/cli'], t.GH_ISSUE_FIELDS],
+      // `repo view` takes the repository positionally; `--repo` there means too many args.
+      ['repo view', ['repo', 'view', 'cli/cli'], t.GH_REPO_FIELDS],
     ]) {
       let output = ''
       try {
-        execFileSync('gh', [...args, '--repo', 'cli/cli', '--json', '__invalid_field_probe__'], {
+        execFileSync('gh', [...args, '--json', '__invalid_field_probe__'], {
           env: { ...process.env, GH_TOKEN: 'offline-contract-probe' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
         })
       } catch (error) { output = `${error.stderr ?? ''}${error.stdout ?? ''}` }
@@ -186,7 +189,10 @@ async function main() {
       assert(`gh accepts our ${label} field list`, /unknown json field/i.test(output) && fields.split(',').every(field => supported.has(field)), output)
     }
     // Flat-field payloads are what gh actually returns; mapping must not need `{}` selectors.
-    assert('no nested selectors left in field lists', !/[{}]/.test(`${t.GH_PR_LIST_FIELDS},${t.GH_PR_VIEW_FIELDS}`))
+    assert('no nested selectors left in field lists', !/[{}]/.test(`${t.GH_PR_LIST_FIELDS},${t.GH_PR_CI_FIELDS},${t.GH_PR_VIEW_FIELDS}`))
+    // The 502/504 root cause: the rollup must never ride along on the 200-item all-state list.
+    assert('all-state list fields exclude statusCheckRollup', !t.GH_PR_LIST_FIELDS.split(',').includes('statusCheckRollup'), t.GH_PR_LIST_FIELDS)
+    assert('CI fields stay a bounded number+rollup query', t.GH_PR_CI_FIELDS === 'number,statusCheckRollup', t.GH_PR_CI_FIELDS)
 
     if (typeof t.mapGhPr === 'function') {
       const sample = {
@@ -209,6 +215,7 @@ async function main() {
       const merged = t.mapGhPr({ ...sample, number: 13, state: 'MERGED', mergedAt: '2026-10-03T00:00:00Z', statusCheckRollup: [] })
       assert('mapGhPr maps MERGED to merged', merged.state === 'merged', merged.state)
       assert('mapGhPr empty rollup stays none', merged.ciState === 'none', merged.ciState)
+      assert('mapGhPr absent rollup is unknown, not none', t.mapGhPr({ number: 15, state: 'OPEN' }).ciState === 'unknown')
     }
     if (typeof t.ghCiState === 'function') {
       assert('ghCiState handles object-shaped rollup', t.ghCiState({ state: 'SUCCESS' }) === 'success')

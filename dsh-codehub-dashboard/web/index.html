@@ -114,6 +114,7 @@ button{font:inherit;cursor:pointer}
 .chip.ci-failure{background:var(--red-bg);color:var(--red)}
 .chip.ci-pending{background:var(--yellow-bg);color:var(--yellow)}
 .chip.ci-none{background:var(--gray-bg);color:var(--gray)}
+.chip.ci-unknown{background:transparent;color:var(--muted);border:1px dashed var(--border2)}
 .chip.src{background:var(--blue-bg);color:var(--blue);font-weight:500}
 .chip.needs{background:var(--accent-soft);color:var(--accent)}
 .chip.reply{background:var(--yellow-bg);color:var(--yellow)}
@@ -359,12 +360,13 @@ window.addEventListener("pagehide",()=>{
 
 const STATE_CH = { open:"开放", merged:"已合并", closed:"已关闭" };
 const RD_CH = { approved:"已通过", changes_requested:"需修改", pending:"评审中", none:"未评审" };
-const CI_TXT = { success:"CI ✓", failure:"CI ✗", pending:"CI ●", none:"CI —" };
+const CI_TXT = { success:"CI ✓", failure:"CI ✗", pending:"CI ●", none:"CI —", unknown:"CI 未查询" };
+const CI_TITLE = { unknown:"本次未查询历史 PR 的 CI 状态（仅查询未合并的 PR）" };
 const SRC_CH = { gh:"gh CLI", http:"REST API", "git-meta":"Git 元信息", error:"出错" };
 const chip = (cls, txt, title) => `<span class="chip ${esc(cls)}"${title?` title="${esc(title)}"`:""}>${esc(txt)}</span>`;
 const stateChip = (mr) => mr.draft && mr.state==="open" ? chip("draft","草稿") : chip(mr.state, STATE_CH[mr.state]||mr.state);
 const rdChip = (mr) => chip(mr.reviewDecision||"none", RD_CH[mr.reviewDecision||"none"]||"—");
-const ciChip = (mr) => chip("ci-"+(mr.ciState||"none"), CI_TXT[mr.ciState||"none"]||"—");
+const ciChip = (mr) => { const s = mr.ciState || "none"; return chip("ci-"+s, CI_TXT[s]||"—", CI_TITLE[s]); };
 const resolutionChip = (c) => c.resolved===true?chip("resolved","已解决"):c.resolved===false?chip("pending","未解决"):chip("none","线程状态未知");
 
 /* ================= state & router ================= */
@@ -648,7 +650,7 @@ function repoCard(r){ const c=r.counts; const tot=Math.max(1,c.open+c.merged+c.c
       <i style="width:${c.closed/tot*100}%;background:var(--red)"></i></div>
     ${r.error?`<div class="errbox">⚠ ${esc(r.error)}</div>`:""}
     ${r.degradedNote?`<div class="errbox" style="background:var(--yellow-bg);color:var(--yellow)">⚠ ${esc(r.degradedNote)}</div>`:""}
-    <div class="ft"><span class="branch">⑂ ${esc(r.defaultBranch||"main")}</span>
+    <div class="ft"><span class="branch" title="${esc(r.defaultBranch?`默认分支 ${r.defaultBranch}`:'未获取到默认分支')}">⑂ ${esc(r.defaultBranch||"未知")}</span>
       ${r.localPath?`<span class="trunc" style="max-width:150px" title="${esc(r.localPath)}">📁 ${esc(r.localPath.split(/[\\\\/]/).pop())}</span>`:""}
       <span title="${esc(absTime(r.lastActivity))}">最近活动 ${relTime(r.lastActivity)}</span>
       <div style="flex:1"></div>

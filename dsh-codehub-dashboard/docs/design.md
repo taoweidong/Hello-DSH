@@ -134,7 +134,7 @@ interface MR {
   sourceBranch: string; targetBranch: string
   createdAt: string; updatedAt: string; mergedAt: string | null
   additions: number; deletions: number; changedFiles: number; labels: string[]
-  ciState: 'success' | 'failure' | 'pending' | 'none'
+  ciState: 'success' | 'failure' | 'pending' | 'none' | 'unknown'   // none=查了但没有 check；unknown=本次未查询
   reviewDecision: 'approved' | 'changes_requested' | 'pending' | 'none'
   requestedReviewers: string[]; reviews: Review[]; comments: ReviewComment[]
   url: string; body: string; headSha: string; baseSha: string
@@ -180,7 +180,7 @@ planSource(repo, cfg, ghOk):
 
 `gh pr list --state all --limit 200 --json <平铺字段>` + `gh issue list` 同规格；详情、diff、组织展开、评论与发布走 `gh api --hostname <host> …`，分页读取使用 `--paginate --slurp`。
 
-关键点（详见 [gh-cli-contract.md](gh-cli-contract.md)）：`gh --json` 只接受**顶层平铺字段**，嵌套选择器 `author{login,name}` 会被 gh 在发请求前本地拒绝；`statusCheckRollup` 在 list 与 view 均合法，因此 CI 状态无需逐 PR 调用 `pr view`。
+关键点（详见 [gh-cli-contract.md](gh-cli-contract.md)）：`gh --json` 只接受**顶层平铺字段**，嵌套选择器 `author{login,name}` 会被 gh 在发请求前本地拒绝；`statusCheckRollup` 虽在 list 合法，但 200 条全状态 PR 带上它会让 GraphQL 网关 502/504（实测 ≥80 条稳定失败、≤60 条成功），所以列表主体不申请它，CI 由并行的 `--state open --json number,statusCheckRollup` 补齐，未覆盖的历史 PR 记为 `unknown`。仓库默认分支与描述来自 `gh repo view`（软失败，未知即留空），不再拿「最近一条 PR 的目标分支」冒充。
 
 执行方式：`execFile`（无 shell）、固定参数数组、30s 超时、16MB 缓冲、`GH_PROMPT_DISABLED=1`、`GH_PAGER=cat`；token 按实例 host 选择 `GH_TOKEN` 或 `GH_ENTERPRISE_TOKEN`，并在注入前清除继承来的其它 token 环境变量。
 

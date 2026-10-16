@@ -15,12 +15,36 @@ const GH_PR_COMMON_FIELDS = [
   'createdAt','updatedAt','mergedAt','additions','deletions','changedFiles',
   'reviewDecision','url','author','labels','reviewRequests','statusCheckRollup',
 ]
-GH_PR_LIST_FIELDS = [...COMMON, 'latestReviews']
+GH_PR_LIST_FIELDS = [...COMMON 去掉 statusCheckRollup, 'latestReviews']   // 18 字段，列表主体
+GH_PR_CI_FIELDS   = 'number,statusCheckRollup'                            // 有界的 CI 状态查询
 GH_PR_VIEW_FIELDS = [...COMMON, 'reviews','comments','body','headRefOid','baseRefOid']
+GH_REPO_FIELDS    = 'defaultBranchRef,name,description'
 GH_ISSUE_FIELDS   = 'number,title,body,state,author,assignees,labels,createdAt,updatedAt,closedAt,url'
 ```
 
-字段名以 `gh pr list --json ___`（打印可用字段清单）为准。`statusCheckRollup` 对 `pr list` 与 `pr view` **都合法**，因此 CI 状态在列表阶段即可获得，无需逐 PR 调用 `pr view`。
+字段名以 `gh pr list --json ___`（打印可用字段清单）为准，并由 `scripts/test-host.mjs` 在每次跑测试时用一份无效字段探针**逐条核对** gh 自己列出的可用清单。
+
+### `statusCheckRollup` 为什么不在列表查询里
+
+`statusCheckRollup` 对 `pr list` 合法，但它会让 GraphQL 在一个请求里解析每个 PR 的**全部 check run**。用 gh 2.102.0 对 `cli/cli` 实测（`--state all`）：
+
+| `--limit` | 带 `statusCheckRollup` | 去掉 `statusCheckRollup` |
+|-----------|----------------------|--------------------------|
+| 200 | `HTTP 504: 504 Gateway Timeout (https://api.github.com/graphql)`，两次运行一致 | 成功，446 KB |
+| 100 | `HTTP 504` | — |
+| 80 | `HTTP 504` | — |
+| 60 | 成功，460 KB | 成功，135 KB（同档另有一次 `HTTP 502`，见下） |
+| 50 | 成功，352 KB | — |
+
+单查 `statusCheckRollup`（`--limit 200 --json statusCheckRollup`）同样 504，单查 `latestReviews` 则成功——**成本项就是 rollup**，不是总体字节数。因此 rollup 从列表字段里移除，改由一条有界查询补齐：
+
+```sh
+gh pr list --repo <owner/name> --state open --limit 200 --json number,statusCheckRollup   # 实测 69 个开放 PR ≈ 209 KB，成功
+```
+
+按 `number` 合并回列表；未被覆盖到的 PR（已合并/已关闭）不写该字段，`mapGhPr` 将其映射为 `ciState: 'unknown'`。这是**「没查」与「没有 CI」的区别**，不能混称 `none`。
+
+200 条的轻字段列表也出现过一次 `HTTP 502`（同参数下一次成功一次失败），即 GitHub 侧存在偶发 5xx；所以 CI 查询失败被设计为**软失败**（`ciCoverage: 'unavailable'` + 仓库卡片 ⚠ 提示），列表主体不因它整体报错。
 
 ## 1. 认证
 
@@ -39,7 +63,9 @@ gh --version      # "gh version 2.102.0 (2026-09-30)"
 ## 2. PR 列表
 
 ```sh
-gh pr list --repo <owner/name> --state all --limit 200 --json <GH_PR_LIST_FIELDS>
+gh pr list --repo <owner/name> --state all --limit 200 --json <GH_PR_LIST_FIELDS>      # 不含 statusCheckRollup
+gh pr list --repo <owner/name> --state open --limit 200 --json number,statusCheckRollup # CI 状态，按 number 合并
+gh repo view <owner/name> --json <GH_REPO_FIELDS>                                       # 默认分支与描述（软失败）
 ```
 
 | gh 字段 | 归一化字段 | 说明 |
@@ -55,7 +81,7 @@ gh pr list --repo <owner/name> --state all --limit 200 --json <GH_PR_LIST_FIELDS
 | `labels` | `MR.labels[]` | 取 `name` |
 | `reviewRequests` | `MR.requestedReviewers[]` | 取 `login` |
 | `latestReviews` | `MR.reviews[]` | 每位 reviewer 的最新评审；`PENDING` 被过滤 |
-| `statusCheckRollup` | `MR.ciState` | 见 §6 |
+| `statusCheckRollup` | `MR.ciState` | 来自 `--state open` 那条查询；未覆盖到的 PR 为 `unknown`，见 §6 |
 
 ## 3. Issue 列表
 
@@ -102,7 +128,10 @@ rollup 是 CheckRun 与 StatusContext 的并集，gh 历史上既可能返回单
 | `failure` | 存在已完成且结论为 `FAILURE/ERROR/TIMED_OUT/CANCELLED/STARTUP_FAILURE/STALE` |
 | `pending` | 存在未定论项（含 `IN_PROGRESS/RUNNING/QUEUED/PENDING`） |
 | `success` | 全部定论且为 `SUCCESS/NEUTRAL/SKIPPED/ACTION_REQUIRED` 或未识别结论 |
-| `none` | 无可识别条目（诚实降级，包括 HTTP provider —— 不逐 PR 拉 check-runs） |
+| `none` | rollup 字段**存在但为空**：该 PR 没有配置任何 check |
+| `unknown` | rollup 字段**不存在**：本次没有查询它的 CI（已合并/已关闭的 PR、CI 查询软失败、HTTP provider 全量） |
+
+`unknown` 与 `none` 必须区分：前者是「没查」，后者是「查了，确实没有」。UI 用虚线灰字 `CI 未查询` 并带 title 说明范围，`op=mrs&ci=` 过滤与「CI 失败」计数都只认已定论的值。
 
 ## 7. 执行方式
 
@@ -138,7 +167,7 @@ execFile(ghPath, args, {
 | 限制 | 影响 | 现状 |
 |------|------|------|
 | 评论无 `resolved` 状态 | 无法区分已解决/未解决 | 写 `null`（未知），不计为未解决；覆盖率说明随 `coverage.note` 呈现 |
-| HTTP provider 无 CI | `ciState = none` | 诚实降级，避免每 PR 追加 check-runs 请求 |
+| HTTP provider 无 CI | `ciState = unknown` | 诚实降级，避免每 PR 追加 check-runs 请求；`unknown` 表示未查询，不是「没有 CI」 |
 | 每仓库 200 条上限 | 统计为样本非全量 | `coverage.limited` + `coverage.note` 明示 |
 | GitHub API rate limit | 刷新可能失败 | TTL 缓存 + 并发 3 + 整轮 inflight 去重 |
 | 字段清单随 gh 版本变化 | 一个非法字段会让全部仓库报错，而外层仍返回 `ok:true` | `__test` 暴露字段清单与映射，`test-data.mjs` 用本地无效字段请求锁定契约 |

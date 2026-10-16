@@ -100,7 +100,7 @@ POST body 上限 256 KB，超限立即拒绝并短路后续数据事件。
                       "changesRequested": 2, "comments": 24, "unresolved": 3, "score": 48 } ],
   "coverage": {
     "limited": true,
-    "note": "统计基于已同步样本：gh 每仓库最多 200 条 PR / Issue，HTTP 为首批结果；意见按需加载，未获取的线程解决状态不计为未解决。不是完整历史统计。"
+    "note": "统计基于已同步样本：gh 每仓库最多 200 条 PR / Issue，HTTP 为首批结果；CI 状态仅覆盖未合并的 PR，历史 PR 显示为未查询；意见按需加载，未获取的线程解决状态不计为未解决。不是完整历史统计。"
   },
   "recent": [ /* Event[]，最多 24 */ ],
   "generatedAt": "2026-10-15T12:00:00.000Z"
@@ -130,6 +130,8 @@ MR 列表（多仓库聚合 + 筛选排序）。
 **Response:** `{ ok, total, mrs[] }` —— `total` 为过滤后总数，`mrs` 为截断后的页。
 
 返回字段（每条）：`number, title, author, state, draft, sourceBranch, targetBranch, createdAt, updatedAt, mergedAt, additions, deletions, changedFiles, labels, ciState, reviewDecision, requestedReviewers, url, needsMyReview, commentCount, unresolvedCount, needsReplyCount, reviewCount, repoKey, repoPath, repoName`。**不含** `reviews/comments` 正文，需要时走 `op=mr`。
+
+`ciState` 取值 `success | failure | pending | none | unknown`；`none` 是「查了，该 PR 没有配置 check」，`unknown` 是「本次未查询」（已合并/已关闭的 PR、CI 查询软失败、HTTP provider）。`ci=` 过滤按字面值匹配，`ci=unknown` 用来查看未查询区间。
 
 ---
 

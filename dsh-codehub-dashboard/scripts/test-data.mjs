@@ -79,6 +79,85 @@ test('organization expansion deduplicates by instance and retains disabled expli
   assert.equal(repos.find(r => r.path === 'a/b').localPath, '/checkout')
 })
 
+// Fixture reproduces the real gh/GraphQL behaviour measured on cli/cli with
+// gh 2.102.0: `--state all --limit 200` including statusCheckRollup returns
+// HTTP 502/504 (deterministic from ~80 items), the same list without the
+// rollup succeeds, and `--state open` with only number+rollup succeeds.
+const ghListFixture = (t) => async (exe, args) => {
+  const at = (flag) => args[args.indexOf(flag) + 1]
+  const state = at('--state')
+  const fields = String(at('--json')).split(',')
+  const limit = Number(at('--limit'))
+  t.calls.push({ state, limit, fields })
+  if (fields.includes('statusCheckRollup') && state === 'all' && limit > 70) {
+    return { code: 1, stdout: '', stderr: 'HTTP 504: 504 Gateway Timeout (https://api.github.com/graphql)' }
+  }
+  if (state === 'all') return { code: 0, stdout: JSON.stringify([
+    { number: 1, title: 'Merged work', state: 'MERGED', updatedAt: '2026-10-05T00:00:00Z' },
+    { number: 2, title: 'Open work', state: 'OPEN', updatedAt: '2026-10-06T00:00:00Z' },
+  ]), stderr: '' }
+  if (t.failCi) return { code: 1, stdout: '', stderr: 'HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)' }
+  return { code: 0, stdout: JSON.stringify([{ number: 2, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] }]), stderr: '' }
+}
+
+test('PR list avoids the oversized check-rollup query and keeps CI where it was fetched', async () => {
+  assert.equal(typeof data.ghPrListRows, 'function')
+  const t = { calls: [] }
+  const { rows, ciCoverage } = await data.ghPrListRows(ghListFixture(t), 'gh', {}, 'cli/cli', 200)
+  assert.equal(t.calls.filter(c => c.state === 'all').every(c => !c.fields.includes('statusCheckRollup')), true,
+    'the all-state list must not request statusCheckRollup for 200 items (GraphQL gateway times out)')
+  assert.deepEqual(rows.map(r => r.number), [1, 2])
+  assert.equal(rows.find(r => r.number === 2).statusCheckRollup?.[0].conclusion, 'FAILURE')
+  assert.equal(ciCoverage, 'open')
+  const mapped = rows.map(data.mapGhPr)
+  assert.equal(mapped.find(m => m.number === 2).ciState, 'failure')
+  assert.equal(mapped.find(m => m.number === 1).ciState, 'unknown', 'merged PRs were never queried for CI')
+})
+
+test('CI enrichment failure degrades the list instead of losing it', async () => {
+  const t = { calls: [], failCi: true }
+  const { rows, ciCoverage } = await data.ghPrListRows(ghListFixture(t), 'gh', {}, 'cli/cli', 200)
+  assert.equal(rows.length, 2)
+  assert.equal(ciCoverage, 'unavailable')
+  assert.equal(rows.map(r => data.mapGhPr(r).ciState).join(), ['unknown', 'unknown'].join())
+})
+
+test('a failing PR list still reports the gh error instead of an empty board', async () => {
+  const failing = async () => ({ code: 1, stdout: '', stderr: 'HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)' })
+  await assert.rejects(data.ghPrListRows(failing, 'gh', {}, 'cli/cli', 200), /502 Bad Gateway/)
+})
+
+test('rollup present but empty stays none, absent stays unknown', () => {
+  assert.equal(data.mapGhPr({ number: 1, statusCheckRollup: [] }).ciState, 'none')
+  assert.equal(data.mapGhPr({ number: 1 }).ciState, 'unknown')
+  assert.equal(data.mapGhPr({ number: 1, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] }).ciState, 'success')
+})
+
+// Fixture for `gh repo view <path> --json defaultBranchRef,name,description`
+// measured against gh 2.102.0: cli/cli → {"defaultBranchRef":{"name":"trunk"}},
+// an unknown repo → non-zero exit with a GraphQL error on stderr.
+test('repo view supplies the real default branch instead of a PR base guess', async () => {
+  assert.equal(typeof data.ghRepoView, 'function')
+  const runner = async (exe, args) => {
+    assert.deepEqual(args.slice(0, 2), ['repo', 'view'], 'repo metadata must come from `gh repo view <path>`')
+    return { code: 0, stdout: JSON.stringify({ defaultBranchRef: { name: 'trunk' }, description: 'GitHub’s official command line tool', name: 'cli' }), stderr: '' }
+  }
+  const meta = await data.ghRepoView({ path: 'cli/cli' }, runner, 'gh', {})
+  assert.equal(meta.defaultBranch, 'trunk')
+  assert.equal(meta.description, 'GitHub’s official command line tool')
+  const configured = await data.ghRepoView({ path: 'cli/cli', defaultBranch: 'release' }, runner, 'gh', {})
+  assert.equal(configured.defaultBranch, 'release', 'a discovered/override value must win')
+})
+
+test('a failing repo view degrades to unknown instead of failing the snapshot', async () => {
+  const failing = async () => ({ code: 1, stdout: '', stderr: 'GraphQL: Could not resolve to a Repository with the name (repository)' })
+  const meta = await data.ghRepoView({ path: 'o/r' }, failing, 'gh', {})
+  assert.equal(meta.defaultBranch, '')
+  assert.equal(meta.description, 'GitHub 仓库 o/r')
+  const garbage = async () => ({ code: 0, stdout: 'not json', stderr: '' })
+  assert.equal((await data.ghRepoView({ path: 'o/r' }, garbage, 'gh', {})).defaultBranch, '')
+})
+
 test('CLI runner passes review bodies on stdin without command interpretation', async () => {
   assert.equal(typeof data.run, 'function')
   const input = 'quotes " and $(not-a-command)\n正文'
@@ -89,6 +168,13 @@ test('CLI runner passes review bodies on stdin without command interpretation', 
 
 const httpConfig = { provider: 'http', pollMinutes: 10, me: { login: 'me' }, instances: [{ id: 'gh', host: 'github.com', token: 'fixture' }], repos: [{ instance: 'gh', path: 'org/repo' }], http: { perPage: 100, timeoutMs: 1000, detailLimit: 2 } }
 const httpRepo = { key: 'gh:org/repo', instanceId: 'gh', path: 'org/repo', localPath: '' }
+
+test('REST provider never claims a CI verdict it did not fetch', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify([{ number: 4, state: 'open', title: 'x', user: { login: 'a' } }])))
+  const fetcher = data.createFetcher({ rev: 0, get: () => httpConfig }, { warn() {} })
+  const [snapshot] = await fetcher.refreshAll(false)
+  assert.equal(snapshot.mrs[0].ciState, 'unknown')
+})
 
 test('paginated GitHub reads preserve all pages and reject redirects', async t => {
   const calls = []
