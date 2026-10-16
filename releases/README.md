@@ -18,6 +18,6 @@
 
 | 文件 | 大小 | 生成时间 | 对应提交 |
 |------|------|----------|----------|
-| dsh-codehub-dashboard-0.1.0.tgz | 63,323 B | 2026-10-16 13:00 | 实机验证后修复 inject 契约的重打包（已装入 desktop + web 双 profile） |
+| dsh-codehub-dashboard-0.1.0.tgz | 63,874 B | 2026-10-16 14:11 | 布局优化版（设计 token 化重排版），已装入 web profile 实机验证 |
 
 > 交付与离线安装操作详见 [dsh-codehub-dashboard/docs/packaging-and-offline-install.md](../dsh-codehub-dashboard/docs/packaging-and-offline-install.md)。
