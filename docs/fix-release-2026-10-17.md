@@ -171,7 +171,7 @@ function kpi(cls,lab,val,sub,hashP){ return `...<div class="val">${typeof val===
 | 同上 | `:143` | 历史实测输出说明改为「0.1.1/0.1.2 仅文件名不同」 |
 | 同上 | `:262` | 升级示例 → `# 例：0.1.2 → 0.1.3` |
 | `docs/quality-assessment-2026-10-16.md` | 文末新增 `### 5.1` | 追加 0.1.2 复审修复进展条目 |
-| `releases/README.md` | `:18-24` | 新增 0.1.2 归档行（大小/时间待回填）+ 更新「最新交付版本」表述 |
+| `releases/README.md` | `:18-24` | 新增 0.1.2 归档行（tgz 实测 68,505 B / 2026-10-17 20:19）+ 更新「最新交付版本」表述 |
 
 **保留未改（有意为之）**：
 - `docs/packaging-and-offline-install.md:131/:132/:148` 的 `0.1.0` 是**历史实测输出**的引用，照抄事实，改动会失真。
@@ -241,8 +241,18 @@ tag "v0.1.1" does not match package.json version "0.1.2" (expected v0.1.2)
 
 ## 7. 交付状态
 
-- **未 commit / 未 push / 未 add** —— 按任务约束，提交由 Lead 统一执行。
-- **待回填**：`releases/README.md` 中 0.1.2 行的 tgz 实际字节数与生成时间、`docs/packaging-and-offline-install.md:32` 的 0.1.2 packed/unpacked size —— 必须先真实执行 `npm pack` 才有数据，**不得沿用 0.1.1 的 68,188 B**。
+- **已提交并推送**（由 Lead 统一执行，本任务作者未 commit/add/push）。
+- **回填已完成**：`releases/README.md:22` 的 0.1.2 tgz 字节数与生成时间、`docs/packaging-and-offline-install.md:32` 的 packed/unpacked size 均已用真实 `npm pack` 输出填入（见下）。
+
+### 7.1 发布事实（2026-10-17）
+
+- **提交**：`04a4cbc` `release(v0.1.2): honest degradation for unknowable thread resolution, gh probe caching, save de-bounce`（15 文件、+1090/−32），已 push 到 `origin/main`（`0ddfecf..04a4cbc`）。
+- **Tag**：`v0.1.2` 已创建并推送。
+- **CI**（main push，run `39032194511`）：**成功**，三矩阵 job 全绿 —— `lint-and-test (18)` / `(20)` / `(22)`。
+- **Publish 工作流**（tag `v0.1.2`，run `39032203051`）：`Verify tag matches package version` ✅ → `Test` **116 tests / 116 pass / 0 fail + 91 passed, 0 failed** ✅ → `Verify packed contents` ✅（9 文件白名单齐）→ **`npm publish` 失败**。
+  - 原因是远端 runner 无 npm 凭据（`NPM_AUTH_TOKEN` 为空 → `npm error code ENEEDAUTH / need auth`），属**既知环境问题，不是本轮代码回归**；0.1.1 同路径同样如此。
+  - **故看到 publish 红灯时不要误判为回归**：本仓库的发布范式是本地 `npm pack` + `releases/` 归档。
+- **实际交付件**：`releases/dsh-codehub-dashboard-0.1.2.tgz`，**68,505 字节**（package size 68.5 kB / unpacked 217.0 kB / 9 文件），生成于 2026-10-17 20:19；`releases/` 被 `.gitignore` 忽略，tgz 不入库。
 
 ---
 
