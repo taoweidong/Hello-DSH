@@ -1,6 +1,6 @@
 # 打包与离线安装操作手册
 
-> dsh-codehub-dashboard v0.1.4 | 文档更新：2026-10-17
+> dsh-codehub-dashboard v0.1.5 | 文档更新：2026-10-17
 >
 > 本手册的命令与输出**均在本机（Windows + DSH 0.2.0-rc.2）实测**，实测产生的临时 profile 已删除。标注「未实测」的条目除外。
 >
@@ -25,11 +25,11 @@
 ### 1.1 用 npm pack（推荐）
 
 ```bash
-npm pack                                  # 在仓库根执行，产出 ./dsh-codehub-dashboard-0.1.4.tgz
+npm pack                                  # 在仓库根执行，产出 ./dsh-codehub-dashboard-0.1.5.tgz
 mv dsh-codehub-dashboard-*.tgz releases/  # 归档到仓库根 releases/，保持根目录整洁
 ```
 
-0.1.0 的文档记录为 `65,437` 字节（历史值，仅作参考）；0.1.1 实测：**9 个文件、package size 66.6 kB（68,188 字节）、unpacked size 210.6 kB（215,702 字节）**；0.1.2 实测：**9 个文件、package size 68.5 kB（68,505 字节）、unpacked size 217.0 kB**；0.1.3 实测：**9 个文件、package size 68.9 kB（68,883 字节）、unpacked size 218.8 kB（218,757 字节）**；0.1.4 实测：**9 个文件、package size 69.8 kB（69,829 字节）、unpacked size 221.7 kB（221,671 字节）**；npm 发布件（Linux LF）：**69,663 字节 / 220,387 字节 unpacked**。下表为 0.1.4 当前源码大小（未压缩），仅用于核对文件是否齐全。归档根为 `package/`（npm 规范前缀）。
+0.1.0 的文档记录为 `65,437` 字节（历史值，仅作参考）；0.1.1 实测：**9 个文件、package size 66.6 kB（68,188 字节）、unpacked size 210.6 kB（215,702 字节）**；0.1.2 实测：**9 个文件、package size 68.5 kB（68,505 字节）、unpacked size 217.0 kB**；0.1.3 实测：**9 个文件、package size 68.9 kB（68,883 字节）、unpacked size 218.8 kB（218,757 字节）**；0.1.4 实测：**9 个文件、package size 69.8 kB（69,829 字节）、unpacked size 221.7 kB（221,671 字节）**（npm 发布件 Linux LF：69,663 / 220,387 字节）；0.1.5 实测：**9 个文件、package size 65.2 kB（65,153 字节）、unpacked size 212.0 kB（211,959 字节）**。下表为 0.1.5 当前源码大小（未压缩），仅用于核对文件是否齐全。归档根为 `package/`（npm 规范前缀）。
 
 > 打包产物统一归档到仓库根 [releases/](../releases/) 目录（目录内有版本清单），不留在仓库根或别处。`releases/*.tgz` 已被 `.gitignore` 排除，交付时按需单独拷贝。
 
@@ -44,7 +44,7 @@ mv dsh-codehub-dashboard-*.tgz releases/  # 归档到仓库根 releases/，保�
 | `package.json` | 1.7 KB | 插件清单（含 `dsh.bundle.patch` 声明） |
 | `cordis.patch.yml` | 509 B | DSH bundle patch |
 | `icon.svg` | 638 B | 插件图标 |
-| `README.md` | 13.7 KB | 使用文档 |
+| `README.md` | 3.9 KB | 项目定位、核心特性与快速开始（详细内容在 `docs/`） |
 | `LICENSE` | 1.1 KB | MIT 许可证 |
 
 > 仓库根的 `docs/`、`scripts/`、`releases/`、`.github/`、`AGENTS.md`、`eslint.config.js` **都不进产物**（未在 `files` 中声明）；需要交付文档请单独打包。
@@ -70,7 +70,7 @@ tar -czf codehub-flat.tar.gz -C E:/GitHub/dsh-codehub-dashboard .
 
 ```bash
 npm pack --dry-run                                  # 预览文件与体积（仓库根执行）
-tar -tzf releases/dsh-codehub-dashboard-0.1.4.tgz | head   # 确认归档布局
+tar -tzf releases/dsh-codehub-dashboard-0.1.5.tgz | head   # 确认归档布局
 node -e "console.log(require('./package.json').dsh.bundle)" # 确认 bundle 声明存在
 ```
 
@@ -88,7 +88,7 @@ npm stage publish
 npm stage approve <stage-id>
 ```
 
-批准前该版本不可安装（注册表上只有占位版本）。首次发布的新包同样先 staged、再批准。`0.1.3` / `0.1.4` 均已按此流程批准并发布（当前 `latest = 0.1.4`）。发布后即可 `dsh plugin --profile <name> add dsh-codehub-dashboard`，无需拷包。npm 安装、校验、升级 / 回滚与发布流程的完整说明见该文档。
+批准前该版本不可安装（注册表上只有占位版本）。首次发布的新包同样先 staged、再批准。`0.1.3` / `0.1.4` 已按此流程批准并发布；`0.1.5` 按同一流程发布（状态见 [npm-package.md](npm-package.md)）。发布后即可 `dsh plugin --profile <name> add dsh-codehub-dashboard`，无需拷包。npm 安装、校验、升级 / 回滚与发布流程的完整说明见该文档。
 
 ---
 
@@ -143,10 +143,10 @@ dsh plugin --profile <name> <pnpm-args...>
 
 ```bash
 cd D:/dsh-plugins
-dsh plugin --profile web add ./dsh-codehub-dashboard-0.1.4.tgz --offline
+dsh plugin --profile web add ./dsh-codehub-dashboard-0.1.5.tgz --offline
 ```
 
-`--offline` 强制只用本地归档/store，便于确认「真离线」。以下为 0.1.0 实测输出（0.1.1/0.1.2/0.1.3/0.1.4 仅文件名不同）：
+`--offline` 强制只用本地归档/store，便于确认「真离线」。以下为 0.1.0 实测输出（0.1.1/0.1.2/0.1.3/0.1.4/0.1.5 仅文件名不同）：
 
 ```
 dsh: initialized profile codehub-offline-test at C:\Users\<you>\.dsh\profiles\codehub-offline-test
@@ -166,7 +166,7 @@ DSH 随后自动完成两件事（实测确认）：
 对 Desktop 的 profile：
 
 ```bash
-dsh plugin --profile desktop add ./dsh-codehub-dashboard-0.1.4.tgz --offline
+dsh plugin --profile desktop add ./dsh-codehub-dashboard-0.1.5.tgz --offline
 ```
 
 前提是先**完全退出** DSH Desktop（托盘也退出）。否则按宿主代码给出的提示失败：
@@ -180,7 +180,7 @@ dsh plugin --profile desktop add ./dsh-codehub-dashboard-0.1.4.tgz --offline
 ```bash
 P=~/.dsh/profiles/<profile>            # Windows: %USERPROFILE%\.dsh\profiles\<profile>
 mkdir -p "$P/node_modules"
-tar -xzf dsh-codehub-dashboard-0.1.4.tgz -C "$P/node_modules"
+tar -xzf dsh-codehub-dashboard-0.1.5.tgz -C "$P/node_modules"
 mv "$P/node_modules/package" "$P/node_modules/dsh-codehub-dashboard"   # 布局 A/B 解压后按实际目录名调整
 
 # $P/package.json —— 只需 bundles，无需 dependencies
@@ -265,12 +265,12 @@ dsh plugin --profile <name> remove dsh-codehub-dashboard
 
 ```bash
 # 打包侧
-npm version patch        # 例：0.1.4 → 0.1.5
+npm version patch        # 例：0.1.5 → 0.1.6
 npm pack
 
 # 目标机：把新 tgz 放到同一目录，覆盖安装
 cd D:/dsh-plugins
-dsh plugin --profile <name> add ./dsh-codehub-dashboard-0.1.4.tgz --offline
+dsh plugin --profile <name> add ./dsh-codehub-dashboard-0.1.5.tgz --offline
 ```
 
 重启 DSH + 硬刷新浏览器生效。建议保留**当前在用**的 tgz 直到新版本验证通过（§3.1 的绝对路径依赖）。
@@ -322,13 +322,13 @@ gh auth status                                  # 验证
 
 ```bash
 # 打包机（仓库根）
-npm pack                                  # → ./dsh-codehub-dashboard-0.1.4.tgz
+npm pack                                  # → ./dsh-codehub-dashboard-0.1.5.tgz
 mv dsh-codehub-dashboard-*.tgz releases/
-tar -tzf releases/dsh-codehub-dashboard-0.1.4.tgz | head   # 抽查布局
+tar -tzf releases/dsh-codehub-dashboard-0.1.5.tgz | head   # 抽查布局
 
 # 目标机（离线）
 cd D:/dsh-plugins
-dsh plugin --profile web add ./dsh-codehub-dashboard-0.1.4.tgz --offline
+dsh plugin --profile web add ./dsh-codehub-dashboard-0.1.5.tgz --offline
 dsh --profile web --dump-config | grep -A2 dsh-codehub-dashboard   # 必须看到插件层
 # 完全退出并重启 DSH，硬刷新浏览器 → 设置页保存 → 刷新
 ```
@@ -342,6 +342,6 @@ dsh --profile web --dump-config | grep -A2 dsh-codehub-dashboard   # 必须看�
 > ⚠️ 扁平化之后仓库根**就是**插件 `package.json` 所在目录，这个坑的危害从「多出垃圾文件」升级为**覆盖插件清单**（被覆盖后 `dsh.bundle.patch` 声明消失，装出去的包不是 profile layer）。请在 `E:/tmp/dsh-cli/` 这类仓库外目录执行 `dsh`，执行后先看 `git status` 再决定是否 `git checkout -- package.json`。
 - 归档名不影响安装（包名取自内层 `package.json`），但**安装后 profile 里记的是绝对路径**，换机/换目录需重新 `add`。
 - `--offline` 在 `dsh plugin` 上实测有效；DSH Desktop **界面内**的插件管理流程本文未覆盖（未实测），界面装完同样可用 `--dump-config` 验证。
-- 在线 registry 安装（`add dsh-codehub-dashboard`）**未在本机实测**：npm 包已于 2026-10-17 发布（`latest = 0.1.4`），命令面与 registry spec 的预检逻辑已从宿主代码确认；本机验证的是 npm 下载与 shasum，不是 `dsh plugin add` 的在线安装路径。
+- 在线 registry 安装（`add dsh-codehub-dashboard`）**未在本机实测**：npm 包已于 2026-10-17 发布（`0.1.4`，`0.1.5` 发布中），命令面与 registry spec 的预检逻辑已从宿主代码确认；本机验证的是 npm 下载与 shasum，不是 `dsh plugin add` 的在线安装路径。
 - `allow-version` / `revoke-version` 的完整行为未实测，仅确认命令面与提示文案存在（读宿主代码）。
 - profile 的 `pnpm-workspace.yaml`、`pnpm-lock.yaml` 由 DSH/pnpm 生成，手动安装路径（§3.3）不需要它们。

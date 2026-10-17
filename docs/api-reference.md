@@ -1,6 +1,6 @@
 # API Reference
 
-> dsh-codehub-dashboard v0.1.4 HTTP API 完整参考 | 最后更新：2026-10-17
+> dsh-codehub-dashboard v0.1.5 HTTP API 完整参考 | 最后更新：2026-10-17
 
 ## Base URL
 
@@ -41,7 +41,7 @@ POST body 上限 256 KB，超限立即拒绝并短路后续数据事件。
 ```json
 {
   "ok": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "config": { /* 脱敏配置 */ },
   "configPath": "C:/Users/you/.dsh/codehub-dashboard/config.json",
   "capabilities": { "ai": true, "develop": true },

@@ -1,8 +1,8 @@
 # npm 发布与安装说明
 
-> 包名：`dsh-codehub-dashboard`（unscoped）｜当前版本：`0.1.4`｜首次发布：2026-10-17
+> 包名：`dsh-codehub-dashboard`（unscoped）｜当前版本：`0.1.5`｜首次发布：2026-10-17
 >
-> **发布状态（2026-10-17）**：`0.1.4` 已批准并发布，`latest = 0.1.4`（发布时刻 `2026-10-17T14:35:55Z`，shasum `a6b07905…`）；`0.1.3` 仍可安装。安装见第 2 节；staging 与 2FA 批准流程见第 1、6 节。
+> **发布状态（2026-10-17）**：`0.1.5` 正在按 staged 流程发布——CI 执行 `npm stage publish` 后等待维护者 2FA 批准；批准后 `latest` 由 `0.1.4` 切换为 `0.1.5`（`0.1.4` 与 `0.1.3` 仍可安装）。安装见第 2 节；staging 与 2FA 批准流程见第 1、6 节。
 >
 > 相关文档：[README](../README.md)｜[使用说明与依赖](usage-and-dependencies.md)｜[打包与离线安装](packaging-and-offline-install.md)｜[GitHub Actions 发布工作流](../.github/workflows/publish.yml)
 
@@ -10,7 +10,7 @@
 
 ## 1. 批准 staged 版本（维护者）
 
-npm 自 2026-09 起限制 bypass-2FA token 直接发布：直接 `npm publish` 会报 `E_STAGE_REQUIRED`，只能先 staging，再由维护者用 2FA 批准。`0.1.3` 与 `0.1.4` 均已按此流程批准（`0.1.4` 的 stage-id 为 `60bb9448-04d1-4d74-b2ba-034eb33b0464`）。以下步骤适用于后续版本。背景见 [stage-only token 公告](https://github.blog/changelog/2026-09-18-stage-only-npm-tokens-for-safer-automation/) 与 [staged publishing 文档](https://docs.npmjs.com/cli/v12/commands/npm-stage)。
+npm 自 2026-09 起限制 bypass-2FA token 直接发布：直接 `npm publish` 会报 `E_STAGE_REQUIRED`，只能先 staging，再由维护者用 2FA 批准。`0.1.3`、`0.1.4` 已按此流程批准；`0.1.5` 按同一流程发布（见文首发布状态）。以下步骤适用于后续版本。背景见 [stage-only token 公告](https://github.blog/changelog/2026-09-18-stage-only-npm-tokens-for-safer-automation/) 与 [staged publishing 文档](https://docs.npmjs.com/cli/v12/commands/npm-stage)。
 
 **方式一：网页（推荐，2FA 不出浏览器）**
 
@@ -29,7 +29,7 @@ npm config delete //registry.npmjs.org/:_authToken
 
 ```sh
 npm view dsh-codehub-dashboard version dist-tags --registry=https://registry.npmjs.org/
-# 0.1.4 实测：version = '0.1.4'；dist-tags.latest = '0.1.4'（0.1.3 仍在 versions 中）
+# 0.1.5 发布后：version = '0.1.5'；dist-tags.latest = '0.1.5'（0.1.4、0.1.3 仍在 versions 中）
 ```
 
 > 如果 `latest` 仍是 `0.0.0-stage`，说明批准尚未生效（可能是 2FA 未完成或登录账号不对），不要安装或升级。
@@ -41,11 +41,11 @@ npm view dsh-codehub-dashboard version dist-tags --registry=https://registry.npm
 ### 2.1 安装到 DSH（推荐）
 
 ```sh
-# 安装 latest（当前为 0.1.4）
+# 安装 latest（当前为 0.1.5）
 dsh plugin --profile <profile> add dsh-codehub-dashboard
 
 # 固定版本，避免跟随 latest
-dsh plugin --profile <profile> add dsh-codehub-dashboard@0.1.4
+dsh plugin --profile <profile> add dsh-codehub-dashboard@0.1.5
 ```
 
 安装后**完全退出并重启 DSH**，左侧导航出现 **CodeHub**。`dsh plugin` 最终交给 pnpm 解析 npm 包，因此 `@<version>` 语法与 npm 一致。
@@ -60,10 +60,10 @@ npm install dsh-codehub-dashboard
 
 ### 2.3 离线 / 无 npm 网络
 
-npm 包与仓库归档的 `.tgz` **文件清单一致**（9 个文件），但字节数可能不同：npm 发布件由 CI 在 Linux 上以 LF 打包（`0.1.4` 为 69,663 B），本机 Windows `npm pack` 按 CRLF 换行打包（69,829 B）。以 npm 上的 shasum 为准。离线安装仍走 tgz，完整步骤见 [打包与离线安装](packaging-and-offline-install.md)：
+npm 包与仓库归档的 `.tgz` **文件清单一致**（9 个文件），但字节数可能不同：本机 Windows `npm pack` 按 CRLF 换行打包（`0.1.5` 为 65,153 B），npm 由 CI 在 Linux 上以 LF 打包，体积略小。以 npm 上的 shasum 为准。离线安装仍走 tgz，完整步骤见 [打包与离线安装](packaging-and-offline-install.md)：
 
 ```sh
-dsh plugin --profile <profile> add ./dsh-codehub-dashboard-0.1.4.tgz --offline
+dsh plugin --profile <profile> add ./dsh-codehub-dashboard-0.1.5.tgz --offline
 ```
 
 ---
@@ -92,13 +92,13 @@ dsh --profile <profile> --dump-config    # 输出中应包含 dsh-codehub-dashbo
 dsh plugin --profile <profile> add dsh-codehub-dashboard@latest
 
 # 升级/回滚到指定版本
-dsh plugin --profile <profile> add dsh-codehub-dashboard@0.1.4
+dsh plugin --profile <profile> add dsh-codehub-dashboard@0.1.5
 
 # 卸载
 dsh plugin --profile <profile> remove dsh-codehub-dashboard
 ```
 
-> **回滚**：`0.1.4` 发布后，npm 上有 `0.1.4` 与 `0.1.3` 两个版本，可直接 `add dsh-codehub-dashboard@0.1.3` 回滚。`0.1.2` 及更早版本从未发布到 npm，回退更早版本请使用 [releases/](../releases/README.md) 中归档的 `.tgz` 离线安装。
+> **回滚**：`0.1.5` 发布后，npm 上有 `0.1.5`、`0.1.4`、`0.1.3`，可直接 `add dsh-codehub-dashboard@0.1.4` 回滚。`0.1.2` 及更早版本从未发布到 npm，回退更早版本请使用 [releases/](../releases/README.md) 中归档的 `.tgz` 离线安装。
 >
 > 升级或回滚后都应重启 DSH 并硬刷新浏览器；插件配置与审计文件不会随包卸载被删除（见 README「安全与隐私」）。
 
@@ -106,22 +106,22 @@ dsh plugin --profile <profile> remove dsh-codehub-dashboard
 
 ## 5. 包内容
 
-`package.json` 的 `files` 白名单决定发布内容；`publishConfig.access` 为 `public`。npm 上 `0.1.4` 的实际打包结果：
+`package.json` 的 `files` 白名单决定发布内容；`publishConfig.access` 为 `public`。本机 `0.1.5` 打包结果（Windows CRLF）：
 
 | 文件 | 大小（字节） |
 |---|---:|
-| `index.js` | 75,733 |
+| `index.js` | 77,017 |
 | `workflows.js` | 27,163 |
 | `web/index.html` | 94,955 |
-| `README.md` | 13,661 |
+| `README.md` | 3,949 |
 | `client.js` | 4,990 |
 | `package.json` | 1,659 |
 | `LICENSE` | 1,079 |
 | `icon.svg` | 638 |
 | `cordis.patch.yml` | 509 |
 
-- 合计 **9 个文件**；发布件 tarball **69,663 B**，解包 **220,387 B**，shasum `a6b07905…`。
-- 本机 Windows `npm pack` 因 CRLF 换行为 69,829 B / 221,671 B（`index.js` 77,017 B）；文件清单相同，**交付校验以 npm registry 上的 shasum 为准**。
+- 合计 **9 个文件**；本机 tarball **65,153 B**，解包 **211,959 B**。
+- npm 发布件由 CI 在 Linux 上以 LF 打包，体积略小（`0.1.4` 的发布件为 69,663 B / 220,387 B，shasum `a6b07905…`）；**交付校验以 npm registry 上的 shasum 为准**。
 - 文件清单：`index.js`、`workflows.js`、`client.js`、`web/index.html`、`cordis.patch.yml`、`icon.svg`、`README.md`、`LICENSE`、`package.json`。
 - **无第三方运行时依赖**；`eslint` 仅在 `devDependencies`，不进入产物。
 - `peerDependencies.@deepseek-ai/dsh` 为 optional；不安装 DSH 也能取包，但插件只有在 DSH 宿主内才会激活。
