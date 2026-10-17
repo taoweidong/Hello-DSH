@@ -29,7 +29,7 @@ npm pack                                  # 在仓库根执行，产出 ./dsh-co
 mv dsh-codehub-dashboard-*.tgz releases/  # 归档到仓库根 releases/，保持根目录整洁
 ```
 
-0.1.0 的文档记录为 `65,437` 字节（历史值，仅作参考）；0.1.1 实测：**9 个文件、package size 66.6 kB（68,188 字节）、unpacked size 210.6 kB（215,702 字节）**；0.1.2 实测：**9 个文件、package size 68.5 kB（68,505 字节）、unpacked size 217.0 kB**；0.1.3 实测：**9 个文件、package size 68.9 kB（68,883 字节）、unpacked size 218.8 kB（218,757 字节）**；0.1.4 实测：**9 个文件、package size 69.8 kB（69,829 字节）、unpacked size 221.7 kB（221,671 字节）**。下表为 0.1.4 当前源码大小（未压缩），仅用于核对文件是否齐全。归档根为 `package/`（npm 规范前缀）。
+0.1.0 的文档记录为 `65,437` 字节（历史值，仅作参考）；0.1.1 实测：**9 个文件、package size 66.6 kB（68,188 字节）、unpacked size 210.6 kB（215,702 字节）**；0.1.2 实测：**9 个文件、package size 68.5 kB（68,505 字节）、unpacked size 217.0 kB**；0.1.3 实测：**9 个文件、package size 68.9 kB（68,883 字节）、unpacked size 218.8 kB（218,757 字节）**；0.1.4 实测：**9 个文件、package size 69.8 kB（69,829 字节）、unpacked size 221.7 kB（221,671 字节）**；npm 发布件（Linux LF）：**69,663 字节 / 220,387 字节 unpacked**。下表为 0.1.4 当前源码大小（未压缩），仅用于核对文件是否齐全。归档根为 `package/`（npm 规范前缀）。
 
 > 打包产物统一归档到仓库根 [releases/](../releases/) 目录（目录内有版本清单），不留在仓库根或别处。`releases/*.tgz` 已被 `.gitignore` 排除，交付时按需单独拷贝。
 
@@ -88,7 +88,7 @@ npm stage publish
 npm stage approve <stage-id>
 ```
 
-批准前该版本不可安装（注册表上只有占位版本）。首次发布的新包同样先 staged、再批准。`0.1.3` 已于 2026-10-17 批准并发布；`0.1.4` 按同一流程发布（发布状态见 [npm-package.md](npm-package.md)）。发布后即可 `dsh plugin --profile <name> add dsh-codehub-dashboard`，无需拷包。npm 安装、校验、升级 / 回滚与发布流程的完整说明见该文档。
+批准前该版本不可安装（注册表上只有占位版本）。首次发布的新包同样先 staged、再批准。`0.1.3` / `0.1.4` 均已按此流程批准并发布（当前 `latest = 0.1.4`）。发布后即可 `dsh plugin --profile <name> add dsh-codehub-dashboard`，无需拷包。npm 安装、校验、升级 / 回滚与发布流程的完整说明见该文档。
 
 ---
 
