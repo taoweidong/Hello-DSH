@@ -161,7 +161,7 @@ interface ReviewComment {
 | `needsReplyCount` | 未解决 && author ≠ me && (mr.author = me ∨ reviewDecision = changes_requested) |
 | `reviewCount` | `reviews.length` |
 
-`buildOverview` 输出 `summary / repos[] / statusDist / activity[30天] / topReviewers[8] / recent[24] / coverage / generatedAt`，其中 `coverage.note` 固定说明样本口径（gh 每仓库 200 条上限、HTTP 首批、按需评论、未获取线程不计未解决）。`summary` 另带 `unknownResolutionComments`（`resolved == null` 的条数）与 `resolutionAvailable`（是否真的拿到过线程解决状态；无评论时为 true），防止 UI 把「拿不到解决状态」误读成「未解决为 0」。
+`buildOverview` 输出 `summary / repos[] / statusDist / activity[30天] / topReviewers[8] / recent[24] / coverage / generatedAt`，其中 `coverage.note` 固定说明样本口径（gh 每仓库 200 条上限、HTTP 首批、按需评论、未获取线程不计未解决）。`summary` 另带 `unknownResolutionComments`（`resolved == null` 的条数）与 `resolutionAvailable`——**后者回答的是「未解决 0 到底可不可信」，而不是「评论数是不是 0」**。它按三态取值：任一条评论带明确的 `true`/`false` 时为 `true`；评论已按需加载（存在 `detailLoaded` 的 MR）且确实一条都没有时为 `true`（此时的 0 是既成事实）；**空列表但详情从未加载时为 `false`**，因为评论只在 `op=reviews` / PR 详情路径按需拉取，空 `allComments` 通常意味着「还没查」而非「已知为 0」，不能把「未查询」包装成确信的 0。UI 据此在 `resolutionAvailable !== true` 时显示「未知」而非 0。
 
 ---
 

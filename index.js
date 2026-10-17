@@ -855,6 +855,7 @@ function buildOverview(snapshots, cfg) {
   const meLogin = (cfg.me?.login || '').trim()
   const now = Date.now(); const weekAgo = now - 7 * DAY_MS
   const repos = []; const allMrs = []; const allComments = []
+  let detailsLoaded = false
   const statusDist = { open: 0, merged: 0, closed: 0 }
   const reviewerAgg = new Map(); const dayMap = new Map(); const events = []
   const dayBucket = (t) => { const k = dateKey(t); if (!dayMap.has(k)) dayMap.set(k, { date: k, opened: 0, merged: 0, comments: 0 }); return dayMap.get(k) }
@@ -863,6 +864,7 @@ function buildOverview(snapshots, cfg) {
   for (const snap of snapshots) {
     if (!snap) continue
     const mrs = (snap.mrs ?? []).map((mr) => decorate(mr, meLogin))
+    if ((snap.mrs ?? []).some((mr) => mr.detailLoaded)) detailsLoaded = true
     let open = 0, merged = 0, closed = 0, needsReview = 0, unresolved = 0, failing = 0, drafts = 0, mergedWeek = 0, lastActivity = 0
     for (const mr of mrs) {
       allMrs.push({ ...mr, repoKey: snap.repoKey, repoPath: snap.repo?.path, repoName: snap.repo?.name })
@@ -920,9 +922,14 @@ function buildOverview(snapshots, cfg) {
     needsReview: allMrs.filter((m) => m.needsMyReview).length, drafts: repos.reduce((s, r) => s + r.counts.drafts, 0),
     unresolvedComments: allComments.filter((c) => c.resolved === false).length,
     unknownResolutionComments: allComments.filter(c => c.resolved == null).length,
-    // `unresolvedComments: 0` is only trustworthy when resolution was actually
-    // fetched. With no comments at all the zero is genuine, so report true.
-    resolutionAvailable: allComments.length === 0 || allComments.some(c => c.resolved === true || c.resolved === false),
+    // `unresolvedComments: 0` is only trustworthy when threads were actually
+    // fetched. Comments load on demand (op=reviews / PR detail), so an empty
+    // allComments usually means "never queried", not "known to be zero" — that
+    // zero must not be presented as a confident result. detailLoaded marks an MR
+    // whose comments really were loaded, which is the only case where an empty
+    // list is a fact. A non-empty list still counts only when at least one
+    // thread carries a definite state; all-null stays unknown.
+    resolutionAvailable: allComments.some(c => c.resolved != null) || (detailsLoaded && allComments.length === 0),
     openIssues: repos.reduce((s, r) => s + r.counts.openIssues, 0),
     closedIssues: repos.reduce((s, r) => s + r.counts.closedIssues, 0),
     assignedIssues: snapshots.reduce((s, r) => s + (r.issues ?? []).filter(i => i.state === 'open' && !!meLogin && i.assignees.includes(meLogin)).length, 0),

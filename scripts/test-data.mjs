@@ -77,6 +77,11 @@ test('overview includes issue counts and explains sampling', () => {
 // unresolved" vs "resolution was never fetched" (REST list payloads carry no
 // thread state). resolutionAvailable tells the two apart without changing the
 // unresolved/needsReply filters, which keep only an explicit `resolved === false`.
+//
+// An empty comment list is only a fact once the threads were actually fetched;
+// comments load on demand (op=reviews / PR detail), so zero comments with no
+// detailLoaded MR means "never queried" and must stay unknown rather than be
+// reported as a confident zero.
 test('overview reports whether comment resolution is knowable', () => {
   const overview = (mrs) => data.buildOverview([{ repoKey: 'gh:a/b', repo: { path: 'a/b' }, mrs, issues: [] }], { me: { login: 'me' } }).summary
   const mr = (comments) => ({ number: 1, state: 'open', author: { login: 'me' }, comments, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-02T00:00:00Z' })
@@ -100,8 +105,65 @@ test('overview reports whether comment resolution is knowable', () => {
   assert.equal(mixed.needsReply, 1)
   assert.equal(mixed.unknownResolutionComments, 1)
 
-  assert.equal(overview([mr([])]).resolutionAvailable, true, 'zero comments is a trustworthy zero')
-  assert.equal(data.buildOverview([], { me: { login: '' } }).summary.resolutionAvailable, true)
+  // An empty list nobody fetched is "no idea", not "nothing there".
+  assert.equal(overview([mr([])]).resolutionAvailable, false, 'an unfetched empty thread list is unknown, not a confirmed zero')
+  assert.equal(data.buildOverview([], { me: { login: '' } }).summary.resolutionAvailable, false, 'no repositories means nothing was ever queried')
+
+  // Once the detail really was loaded, zero comments is a fact worth trusting.
+  assert.equal(overview([{ ...mr([]), detailLoaded: true }]).resolutionAvailable, true, 'a loaded MR with no comments is a confirmed zero')
+  assert.equal(overview([{ ...mr([]), detailLoaded: true }]).totalComments, 0)
+})
+
+// `detailsLoaded` answers "were the threads fetched?", never "is the thread state
+// known?". The two are independent: an MR whose detail was loaded can still hold
+// comments that carry no resolution, and those must keep resolutionAvailable
+// false. The invariant is easy to lose by rewriting the summary as
+// `detailsLoaded || some(...)`, which these cases pin down.
+test('loading a detail does not make unknown thread state knowable', () => {
+  const snap = (repoKey, mrs) => ({ repoKey, repo: { path: repoKey.split(':')[1] }, mrs, issues: [] })
+  const mr = (comments, extra = {}) => ({ number: 1, state: 'open', author: { login: 'me' }, comments, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-02T00:00:00Z', ...extra })
+  const summary = (...snaps) => data.buildOverview(snaps, { me: { login: 'me' } }).summary
+  const unresolved = { resolved: null, author: { login: 'other' }, createdAt: '2026-10-01T00:00:00Z' }
+
+  // 1. Detail loaded, comments present, none of them carries a state.
+  const loaded = summary(snap('gh:a/b', [mr([unresolved], { detailLoaded: true })]))
+  assert.equal(loaded.resolutionAvailable, false,
+    'a loaded detail with only unresolved:null comments is still unknowable')
+  assert.equal(loaded.unknownResolutionComments, 1)
+  assert.equal(loaded.unresolvedComments, 0, 'and it still must not be reported as unresolved')
+
+  // 2. Two snapshots: repo A loaded with no comments (a real zero), repo B never
+  //    loaded but holding a null comment. allComments is non-empty, so the
+  //    loaded-empty branch cannot apply and the answer must stay false.
+  const mixedSnaps = summary(
+    snap('gh:a/b', [mr([], { detailLoaded: true })]),
+    snap('gh:c/d', [mr([{ ...unresolved, author: { login: 'dave' } }])]),
+  )
+  assert.equal(mixedSnaps.resolutionAvailable, false,
+    'one loaded-but-empty repo must not vouch for a repo whose threads were never fetched')
+  assert.equal(mixedSnaps.unknownResolutionComments, 1)
+
+  // 3. detailsLoaded is a per-snapshot OR: A loaded-empty alone is a confirmed
+  //    zero even when B is listed and was never loaded, as long as B has no
+  //    comments to contradict it.
+  const loadedElsewhere = summary(
+    snap('gh:a/b', [mr([], { detailLoaded: true })]),
+    snap('gh:c/d', [mr([])]),
+  )
+  assert.equal(loadedElsewhere.resolutionAvailable, true,
+    'a loaded-empty repo makes an empty board a confirmed zero')
+  assert.equal(loadedElsewhere.totalComments, 0)
+
+  // 4. The other direction: nobody loaded a detail, so even an empty board stays
+  //    unknown no matter how many repos are listed.
+  const nothingLoaded = summary(snap('gh:a/b', [mr([])]), snap('gh:c/d', [mr([])]))
+  assert.equal(nothingLoaded.resolutionAvailable, false,
+    'listing repos is not the same as having fetched their threads')
+  assert.equal(nothingLoaded.totalComments, 0)
+
+  // 5. A definite state anywhere still wins, loaded or not.
+  assert.equal(summary(snap('gh:a/b', [mr([unresolved, { resolved: false, author: { login: 'other' }, createdAt: '2026-10-01T00:00:00Z' }])])).resolutionAvailable, true,
+    'one explicit resolved:false is enough to make the filter meaningful')
 })
 
 test('organization expansion deduplicates by instance and retains disabled explicit overrides', () => {

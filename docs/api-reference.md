@@ -74,7 +74,7 @@ POST body 上限 256 KB，超限立即拒绝并短路后续数据事件。
 }
 ```
 
-`resolutionAvailable=false` 时，`unresolvedComments: 0` 与 `needsReply: 0` 只表示「本次没有拿到线程解决状态」，不代表没有未解决意见；`unknownResolutionComments` 给出 `resolved == null` 的条数，UI 显示「未知」且不把相关评论计入未解决/待回复。无评论时 `resolutionAvailable` 为 `true`（0 是可信的）。当前 gh/REST provider 不返回线程解决状态，因此实际响应通常为 `unresolvedComments: 0`、`resolutionAvailable: false`。
+`resolutionAvailable=false` 时，`unresolvedComments: 0` 与 `needsReply: 0` 只表示「本次没有拿到线程解决状态」，不代表没有未解决意见；`unknownResolutionComments` 给出 `resolved == null` 的条数，UI 显示「未知」且不把相关评论计入未解决/待回复。`resolutionAvailable` 只在两种情况下为 `true`：评论里已有明确的解决状态，或评论**确实按需加载过**且加载后为空——后者的 0 才是可信的。**评论未加载时，即使条数为 0 也返回 `false`**：「没有查询过」不等于「已知为 0」，未加载的空列表不能被当作确信的零。当前 gh/REST provider 不返回线程解决状态，因此实际响应通常为 `unresolvedComments: 0`、`resolutionAvailable: false`。
 
 ---
 
