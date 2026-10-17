@@ -4,20 +4,33 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing git tag to stage for publishing (e.g. v0.1.3)'
+        required: true
+        type: string
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
+      # Staged publishing needs npm >= 11.15.0 (node 22 bundles npm 10.x).
+      - name: Upgrade npm for staged publishing
+        run: npm install -g 'npm@^11.15.0'
       - name: Install dev dependencies
         run: npm ci
       - name: Verify tag matches package version
-        run: node scripts/check-version.mjs "$GITHUB_REF_NAME"
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: node scripts/check-version.mjs "$TAG"
       - name: Lint
         run: npm run lint
       - name: Test
@@ -37,7 +50,9 @@ jobs:
           if (pack.entryCount !== 9) throw new Error("expected 9 packed files, got " + pack.entryCount);
           console.log("pack ok: " + pack.entryCount + " files, " + pack.size + " bytes packed, " + pack.unpackedSize + " bytes unpacked");
           '
-      - name: Publish
-        run: npm publish
+      # Stage-only tokens cannot run `npm publish`; they may only stage.
+      # A maintainer completes the release with 2FA: `npm stage approve <stage-id>`.
+      - name: Stage for publishing
+        run: npm stage publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
