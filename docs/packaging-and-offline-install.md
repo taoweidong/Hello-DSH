@@ -342,6 +342,6 @@ dsh --profile web --dump-config | grep -A2 dsh-codehub-dashboard   # 必须看�
 > ⚠️ 扁平化之后仓库根**就是**插件 `package.json` 所在目录，这个坑的危害从「多出垃圾文件」升级为**覆盖插件清单**（被覆盖后 `dsh.bundle.patch` 声明消失，装出去的包不是 profile layer）。请在 `E:/tmp/dsh-cli/` 这类仓库外目录执行 `dsh`，执行后先看 `git status` 再决定是否 `git checkout -- package.json`。
 - 归档名不影响安装（包名取自内层 `package.json`），但**安装后 profile 里记的是绝对路径**，换机/换目录需重新 `add`。
 - `--offline` 在 `dsh plugin` 上实测有效；DSH Desktop **界面内**的插件管理流程本文未覆盖（未实测），界面装完同样可用 `--dump-config` 验证。
-- 在线 registry 安装（`add dsh-codehub-dashboard`）**未实测**：本插件包尚未发布到 npm。命令面与 registry spec 的预检逻辑已从宿主代码确认。
+- 在线 registry 安装（`add dsh-codehub-dashboard`）**未在本机实测**：npm 包已于 2026-10-17 发布（`latest = 0.1.4`），命令面与 registry spec 的预检逻辑已从宿主代码确认；本机验证的是 npm 下载与 shasum，不是 `dsh plugin add` 的在线安装路径。
 - `allow-version` / `revoke-version` 的完整行为未实测，仅确认命令面与提示文案存在（读宿主代码）。
 - profile 的 `pnpm-workspace.yaml`、`pnpm-lock.yaml` 由 DSH/pnpm 生成，手动安装路径（§3.3）不需要它们。

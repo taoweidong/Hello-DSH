@@ -328,7 +328,12 @@ async function main() {
     // Every file the loader needs must actually be published.
     const needed = ['index.js', 'workflows.js', 'client.js', 'web', 'cordis.patch.yml', 'icon.svg']
     assert('package.files covers every runtime asset', needed.every((f) => (pkg.files || []).includes(f)), JSON.stringify(pkg.files))
-    assert('README documents the Windows chmod caveat', /Windows/.test(readFileSync(join(pluginDir, 'README.md'), 'utf8')))
+    // The caveat moved out of the slim README into the usage/dependency doc;
+    // assert it is still documented there and that the README points at it.
+    const readme = readFileSync(join(pluginDir, 'README.md'), 'utf8')
+    const usageDoc = readFileSync(join(pluginDir, 'docs', 'usage-and-dependencies.md'), 'utf8')
+    assert('docs document the Windows chmod caveat', /Windows/.test(usageDoc))
+    assert('README links the usage doc', /docs\/usage-and-dependencies\.md/.test(readme))
   } catch (e) {
     assert('manifest consistency checks ran', false, e.message)
   }

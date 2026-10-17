@@ -349,15 +349,15 @@ review.publish {id,body?,confirmed:true}
 
 ## 10. 测试策略
 
-`npm test` = `node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs`（**99 用例 / 99 pass / 0 fail**）**+** `node scripts/test-host.mjs`（**91 断言 / 91 passed / 0 failed**），合计 **190** 项检查。
+`npm test` = `node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs`（**117 用例 / 117 pass / 0 fail**）**+** `node scripts/test-host.mjs`（**92 断言 / 92 passed / 0 failed**），合计 **209** 项检查。
 
 | 文件 | 用例 | 覆盖 |
 |------|------|------|
-| `scripts/test-data.mjs` | 21 | gh 字段契约、映射、CI 聚合、分页解析、配置脱敏、REST 回退与保留旧数据 |
+| `scripts/test-data.mjs` | 29 | gh 字段契约、映射、CI 聚合、分页解析、配置脱敏、REST 回退与保留旧数据 |
 | `scripts/test-api.mjs` | 4 | 配置归一化、provider 调度与缓存、filterMrs、鉴权围栏、Origin/415、保存不阻塞、mrs 错误与 coverage |
 | `scripts/test-workflows.mjs` | 23 | 确认门、状态机、SHA/配置竞态、`publish_unknown`、持久化与崩溃恢复、宿主 `create/prompt` 契约（含 signal 必填断言）；4 种终止原因展开为 4 个用例 |
-| `scripts/test-client.mjs` | 51 | SPA 渲染与状态机：三态失败、coverage/detailErrors、路由守卫、工作流交互、设置保存；列表/视图用表驱动展开 |
-| `scripts/test-host.mjs` | 91 断言 | 真实 node:http + fake cordis ctx 的端到端 op 验证（含 CSP、401/403/405/415、256KB body 上限、脱敏、discover、inject 扁平数组契约） |
+| `scripts/test-client.mjs` | 61 | SPA 渲染与状态机：三态失败、coverage/detailErrors、路由守卫、工作流交互、设置保存；列表/视图用表驱动展开 |
+| `scripts/test-host.mjs` | 92 断言 | 真实 node:http + fake cordis ctx 的端到端 op 验证（含 CSP、401/403/405/415、256KB body 上限、脱敏、discover、inject 扁平数组契约、README/使用文档守卫） |
 
 测试使用可控 fixture，**不发布真实评论、不调用收费模型**；gh 字段检查用本地无效字段请求验证，不依赖真实登录。`npm run dev` 监听 `127.0.0.1:4173`（`PORT` 可改），使用独立临时配置并在退出时清理，不读取或修改真实 DSH 配置。
 

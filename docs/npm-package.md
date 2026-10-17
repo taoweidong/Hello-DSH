@@ -4,7 +4,7 @@
 >
 > **发布状态（2026-10-17）**：`0.1.4` 已批准并发布，`latest = 0.1.4`（发布时刻 `2026-10-17T14:35:55Z`，shasum `a6b07905…`）；`0.1.3` 仍可安装。安装见第 2 节；staging 与 2FA 批准流程见第 1、6 节。
 >
-> 相关文档：[README](../README.md)｜[打包与离线安装](packaging-and-offline-install.md)｜[GitHub Actions 发布工作流](../.github/workflows/publish.yml)
+> 相关文档：[README](../README.md)｜[使用说明与依赖](usage-and-dependencies.md)｜[打包与离线安装](packaging-and-offline-install.md)｜[GitHub Actions 发布工作流](../.github/workflows/publish.yml)
 
 ---
 
@@ -134,7 +134,7 @@ dsh plugin --profile <profile> remove dsh-codehub-dashboard
 发布由 GitHub Actions 完成，不在本地 `npm publish`。
 
 1. **升版本**：`package.json`、`package-lock.json`（两处）、`index.js` 的 `PLUGIN_VERSION`、`scripts/test-host.mjs` 的 boot 断言、`check-version.mjs` 注释，以及 `design.md` / `api-reference.md` / 本文档与打包手册的版本引用。
-2. **跑门禁**：`npm run lint` 与 `npm test` 全绿（当前基线：117 用例 + 91 host 断言）。
+2. **跑门禁**：`npm run lint` 与 `npm test` 全绿（当前基线：117 用例 + 92 host 断言）。
 3. **提交并打 tag**：
 
    ```sh
