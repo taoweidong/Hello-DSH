@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Publish gate: the git tag must be exactly `v` + package.json version.
-// Usage: node scripts/check-version.mjs v0.1.0
+// Usage: node scripts/check-version.mjs v0.1.2
 //        (or let GITHUB_REF_NAME supply the tag in GitHub Actions)
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'

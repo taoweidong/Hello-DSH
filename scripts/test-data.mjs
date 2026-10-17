@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { __test as data } from '../index.js'
+import { createServer } from 'node:http'
+import { pathToFileURL } from 'node:url'
+import { __test as data, apply } from '../index.js'
 
 function configStore(t) {
   const dir = mkdtempSync(join(tmpdir(), 'codehub-config-'))
@@ -258,5 +260,279 @@ test('PR diff rejects head changes during download', async t => {
     return new Response('[]')
   })
   await assert.rejects(data.pullDetail(httpRepo, httpConfig, 7, { diff: true }), err => err.status === 409)
+})
+
+/* ===================== ghAvailable failure-state cache (P1-2) ===================== */
+
+// `ghAvailable` used to cache only the SUCCESS branch: `ghOkCache.ok === false`
+// fell through to a fresh `gh --version` + `gh auth status` spawn on every
+// refresh, so an unauthenticated host paid two process spawns per poll. The fix
+// caches both branches with an asymmetric TTL (success 300s, failure 60s).
+//
+// The probe is a real child process, so counting it needs a real executable.
+// `process.execPath` is one, and NODE_OPTIONS makes every spawned node run the
+// shim, which appends one line per invocation. `ghProbe` runs two spawns per
+// probe (`--version`, then `auth status`), so probe rounds = lines / 2.
+const probeCounter = (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'codehub-ghprobe-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const log = join(dir, 'probes.log')
+  const shim = join(dir, 'shim.mjs')
+  writeFileSync(shim, [
+    "import { appendFileSync } from 'node:fs'",
+    `appendFileSync(${JSON.stringify(log.replaceAll('\\', '/'))}, 'probe\\n')`,
+    '',
+  ].join('\n'))
+  const previous = process.env.NODE_OPTIONS
+  process.env.NODE_OPTIONS = `${previous ? `${previous} ` : ''}--import=${pathToFileURL(shim).href}`
+  t.after(() => { if (previous === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = previous })
+  return {
+    // spawn is only counted for a real, runnable executable. The "unavailable"
+    // path below is a missing file: `gh --version` fails before node loads
+    // NODE_OPTIONS, so that probe leaves no line here. Use this counter to
+    // prove *successful* probes did or did not happen, and use the
+    // config-swap idiom (see the TTL test) for the failing branch.
+    rounds: () => { try { return readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).length } catch { return 0 } },
+    // A path that cannot be spawned: `--version` fails, so the probe reports
+    // ok:false without ever reaching the shim.
+    unavailable: join(dir, 'gh-not-installed.exe'),
+    available: process.execPath,
+  }
+}
+const ghCfg = (ghPath) => ({ provider: 'auto', ghPath, instances: [], repos: [], me: { login: 'me' }, pollMinutes: 10 })
+
+// Freeze Date.now so the TTL boundaries are exercised without sleeping for a
+// minute. The cache stores its own timestamps, so a monotonic offset is enough.
+const withFakeClock = (t) => {
+  const real = Date.now
+  let skew = 0
+  Date.now = () => real() + skew
+  t.after(() => { Date.now = real })
+  return { advance: (ms) => { skew += ms } }
+}
+
+test('an unavailable gh is cached instead of re-probed on every refresh', async t => {
+  const counter = probeCounter(t)
+  const cfg = ghCfg(counter.unavailable)
+  const fetcher = data.createFetcher({ rev: 1, get: () => cfg }, { warn() {} })
+
+  assert.equal(await fetcher.ghAvailable(cfg), false)
+  // Swapping in an executable that WOULD succeed must not change the answer:
+  // the cached failure still owns the window, so nothing spawns.
+  assert.equal(await fetcher.ghAvailable(ghCfg(counter.available)), false,
+    'a not-ok probe must stay cached, not fall through to a new spawn')
+  assert.equal(counter.rounds(), 0, 'the failing probe never reached the shim (missing executable)')
+
+  // invalidate() is the documented escape hatch and must force a fresh probe.
+  fetcher.invalidate()
+  assert.equal(await fetcher.ghAvailable(ghCfg(counter.available)), true)
+  assert.equal(counter.rounds(), 1, 'invalidate() must force exactly one new probe')
+})
+
+test('the failure and success gh caches expire on different TTLs', async t => {
+  const counter = probeCounter(t)
+  const clock = withFakeClock(t)
+
+  // Failure branch: cached for 60s.
+  const failing = data.createFetcher({ rev: 1, get: () => ghCfg(counter.unavailable) }, { warn() {} })
+  assert.equal(await failing.ghAvailable(ghCfg(counter.unavailable)), false)
+  clock.advance(30_000)
+  assert.equal(await failing.ghAvailable(ghCfg(counter.available)), false,
+    'inside the 60s failure window the cached false must win')
+  assert.equal(counter.rounds(), 0)
+  clock.advance(31_000)
+  assert.equal(await failing.ghAvailable(ghCfg(counter.available)), true,
+    'past the 60s failure window the probe must run again')
+  assert.equal(counter.rounds(), 1)
+
+  // Success branch: cached for 300s. A 61s-old success must survive where a
+  // 61s-old failure had already expired -- that asymmetry is the whole point.
+  const healthy = data.createFetcher({ rev: 1, get: () => ghCfg(counter.available) }, { warn() {} })
+  assert.equal(await healthy.ghAvailable(ghCfg(counter.available)), true)
+  const roundsAfterSuccess = counter.rounds()
+  clock.advance(61_000)
+  assert.equal(await healthy.ghAvailable(ghCfg(counter.unavailable)), true,
+    'inside the 300s success window the cached true must win')
+  assert.equal(counter.rounds(), roundsAfterSuccess, 'no spawn while the success cache is warm')
+
+  // At 301s the success cache is stale, so the probe must run again. Prove it
+  // by handing the fetcher a *runnable* executable: a cache that is still warm
+  // would keep answering from memory and never look at the new ghPath.
+  clock.advance(240_000)
+  assert.equal(await healthy.ghAvailable(ghCfg(counter.available)), true,
+    'past the 300s success window the probe must run again')
+  assert.equal(counter.rounds(), roundsAfterSuccess + 1,
+    'a stale success cache must not suppress the next probe')
+})
+
+test('an http provider never pays for a gh probe', async () => {
+  const cfg = { ...ghCfg('gh'), provider: 'http' }
+  const fetcher = data.createFetcher({ rev: 1, get: () => cfg }, { warn() {} })
+  assert.equal(await fetcher.ghAvailable(cfg), false)
+  // Repeat calls must stay free: this branch returns before the cache is even
+  // consulted, so it can never be the reason a refresh spawns gh.
+  assert.equal(await fetcher.ghAvailable(cfg), false)
+})
+
+/* ===================== config.set refresh is queued, not forced (P1-3) ===================== */
+
+// Saving the config used to run `snapshots(true)` inline: a forced full refresh
+// that bypasses the poll TTL, so N quick saves meant N full pulls. It is now a
+// single-flight, NON-forced refresh issued after the response.
+const routeHarness = async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'codehub-route-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const routes = []
+  const cleanups = []
+  const ctx = {
+    connection: { admit: () => ({ peer: {} }) },
+    logger: { warn: () => {} },
+    webServer: { register: (route) => { routes.push(route); return () => {} } },
+    // apply() arms a 60s poll ticker and a 3s warmup timer; failing to run the
+    // effect cleanup leaves them armed and hangs the whole test run.
+    effect: (fn) => { cleanups.push(fn()) },
+  }
+  apply(ctx, { configPath: join(dir, 'config.json') })
+  t.after(() => { for (const cleanup of cleanups.splice(0)) { try { cleanup?.() } catch {} } })
+  const server = createServer((req, res) => routes[0].handler(req, res).catch((err) => { res.writeHead(500); res.end(String(err)) }))
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => { server.closeAllConnections?.(); server.close() })
+  const base = `http://127.0.0.1:${server.address().port}`
+  return {
+    dir,
+    // The original global, so tests can mock the plugin's own GitHub calls
+    // without intercepting the harness's requests to its own server.
+    rawFetch: fetch,
+    get: (path) => fetch(`${base}${path}`).then((r) => r.json()),
+    post: (op, body) => fetch(`${base}/codehub/api?op=${op}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json()),
+  }
+}
+const routeConfig = (extra = {}) => ({
+  provider: 'http', pollMinutes: 10, me: { login: 'me' },
+  instances: [{ id: 'gh', host: 'github.com', token: 'fixture' }],
+  repos: [{ instance: 'gh', path: 'org/repo' }],
+  http: { perPage: 100, timeoutMs: 5000, detailLimit: 2 }, ...extra,
+})
+
+test('config.set answers before the queued refresh finishes', async t => {
+  const harness = await routeHarness(t)
+  const slow = 400
+  let pulls = 0
+  // Only the plugin's outbound GitHub calls are mocked; the harness's own
+  // requests to its local server go through the original fetch.
+  const realFetch = harness.rawFetch
+  globalThis.fetch = async (url, options) => {
+    if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url, options)
+    pulls++
+    await new Promise((r) => setTimeout(r, slow))
+    return Response.json([])
+  }
+  t.after(() => { globalThis.fetch = realFetch })
+
+  const started = Date.now()
+  const saved = await harness.post('config.set', routeConfig())
+  const elapsed = Date.now() - started
+  assert.equal(saved.ok, true)
+  assert.equal(saved.overview, null, 'the response keeps overview:null so the UI retains its old value')
+  assert.equal(saved.refreshQueued, true)
+  assert.ok(elapsed < slow, `saving must not wait for the refresh (took ${elapsed}ms against a ${slow}ms backend)`)
+
+  // The refresh really was queued: it lands after the response.
+  await new Promise((r) => setTimeout(r, slow * 3))
+  assert.ok(pulls > 0, 'the queued refresh must actually reach the backend')
+})
+
+test('concurrent config saves collapse into one queued refresh', async t => {
+  const harness = await routeHarness(t)
+  let listPulls = 0
+  const realFetch = harness.rawFetch
+  globalThis.fetch = async (url, options) => {
+    if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url, options)
+    if (!String(url).includes('/issues')) listPulls++
+    await new Promise((r) => setTimeout(r, 100))
+    return Response.json([])
+  }
+  t.after(() => { globalThis.fetch = realFetch })
+
+  // Baseline: one save costs one repository-list pull.
+  await harness.post('config.set', routeConfig())
+  await new Promise((r) => setTimeout(r, 500))
+  const single = listPulls
+  assert.equal(single, 1, 'one save performs exactly one repository-list pull')
+
+  // Four saves in the same tick must not multiply the work.
+  await Promise.all([1, 2, 3, 4].map(() => harness.post('config.set', routeConfig())))
+  await new Promise((r) => setTimeout(r, 900))
+  assert.equal(listPulls - single, 1, 'four concurrent saves queue one refresh, not four')
+})
+
+/* ===================== unknown resolution != unresolved (P1-1) ===================== */
+
+test('an unknown thread state never counts as unresolved at any level', () => {
+  const mr = data.mapGhPr({ number: 1, comments: [{ body: 'only a guess at state' }], reviews: [] })
+  assert.equal(mr.comments[0].resolved, null, 'REST list payloads carry no thread state')
+
+  // PR level: decorate() must not promote an unknown thread to unresolved.
+  const decorated = data.decorate(mr, '')
+  assert.equal(decorated.unresolvedCount, 0, 'resolved:null is unknown, not unresolved')
+  assert.equal(decorated.commentCount, 1)
+
+  // Overview level: the same guard, plus the flag that tells the UI it is unknown.
+  const summary = data.buildOverview([{ repoKey: 'gh:a/b', repo: { path: 'a/b' }, mrs: [mr], issues: [] }], { me: { login: 'me' } }).summary
+  assert.equal(summary.resolutionAvailable, false)
+  assert.equal(summary.unresolvedComments, 0, 'an unknown thread must not inflate unresolvedComments')
+  assert.equal(summary.unknownResolutionComments, 1, 'it is reported separately as unknown instead')
+  assert.equal(summary.totalComments, 1)
+
+  // And the moment real state arrives, the same comment can legitimately count.
+  // It cannot be simulated through mapGhPr() — index.js:384 and :545 hardcode
+  // `resolved: null` for REST-list comments, which is exactly the fix under
+  // test. So build the known-state comment the way the payload would look.
+  const known = data.mapGhPr({ number: 1, comments: [{ body: 'x' }], reviews: [] })
+  known.comments = known.comments.map((c) => ({ ...c, body: 'x', resolved: false }))
+  const knownSummary = data.buildOverview([{ repoKey: 'gh:a/b', repo: { path: 'a/b' }, mrs: [known], issues: [] }], { me: { login: 'me' } }).summary
+  assert.equal(knownSummary.resolutionAvailable, true)
+  assert.equal(knownSummary.unresolvedComments, 1, 'an explicit resolved:false still counts')
+  assert.equal(knownSummary.unknownResolutionComments, 0)
+})
+
+test('the reviews unresolved filter stays empty while resolution is unknowable', async t => {
+  // `/codehub/reviews?unresolved=1` filters on `resolved === false`, which a
+  // REST-sourced list can never satisfy. The endpoint must keep reporting an
+  // honest empty total (0) rather than inventing "unresolved" rows, and must not
+  // change the `total` contract once real state exists.
+  const harness = await routeHarness(t)
+  const realFetch = harness.rawFetch
+  const pullBody = {
+    number: 7, state: 'open', title: 'Fix', user: { login: 'other' },
+    created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-02T00:00:00Z',
+    head: { ref: 'feature', sha: 'abc' }, base: { ref: 'trunk' },
+  }
+  globalThis.fetch = async (url, options) => {
+    if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url, options)
+    const href = String(url)
+    if (/\/pulls\/7\/comments/.test(href)) return Response.json([{ id: 1, body: 'discussion', user: { login: 'other' }, created_at: '2026-10-01T00:00:00Z' }])
+    if (/\/pulls\/7\/reviews/.test(href)) return Response.json([])
+    if (/\/pulls\/7$/.test(href)) return Response.json(pullBody)
+    if (/\/pulls\?/.test(href)) return Response.json([pullBody])
+    if (/\/issues\?/.test(href)) return Response.json([])
+    return Response.json([])
+  }
+  t.after(() => { globalThis.fetch = realFetch })
+
+  await harness.post('config.set', routeConfig())
+  await new Promise((r) => setTimeout(r, 600))
+
+  const filtered = await harness.get('/codehub/api?op=reviews&unresolved=1')
+  assert.equal(filtered.ok, true)
+  assert.deepEqual(filtered.comments, [], 'no thread is known unresolved, so the filter yields nothing')
+  assert.equal(filtered.total, 0, 'total reflects the filtered count and must not invent unknowns')
+  assert.equal(filtered.coverage.note.includes('线程解决状态未知'), true, 'the payload still discloses the unknown state')
+
+  const all = await harness.get('/codehub/api?op=reviews')
+  assert.equal(all.ok, true)
+  assert.ok(all.total >= 1, 'the unfiltered list still returns the comment')
+  assert.equal(all.comments.every((c) => c.resolved === null), true,
+    'REST-sourced comments keep resolved:null rather than being coerced to false')
 })
 

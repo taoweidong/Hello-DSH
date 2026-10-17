@@ -77,3 +77,12 @@
 - 工程化：CI 改用 `npm ci`；publish workflow 增加 tag 与 `package.json` 版本一致性、`npm pack` 9 文件白名单门禁；`package-lock.json` 已从 `.gitignore` 移除，提交时需随改动入库，否则 `npm ci` 在 CI 会因无 lock 失败。
 - 文档：`design.md`、`api-reference.md`、`README.md`、`packaging-and-offline-install.md` 已按 0.1.1 与 99/91 同步；0.1.1 tarball 字节数待生成后补（packaging §1.1 已标 TODO）。
 - 未闭合：真实宿主启动日志验收仍只能人工执行（`test-host.mjs` 的 fake ctx 直接 `apply()`，证明不了 cordis 服务解析），与 AGENTS.md「绿灯之外」一致。
+
+### 5.1 2026-10-17 晚：0.1.2 复审修复（同日后段）
+
+> 承 [code-review-2026-10-17.md](code-review-2026-10-17.md) 的 P1/P2 清单，本轮修复 P1-1、P1-2、P1-3、P2-1、P2-5；逐条证据见 [fix-release-2026-10-17.md](fix-release-2026-10-17.md)。
+
+- 测试：`node --test` 四件套 **116 用例 / 116 pass / 0 fail**；`test-host.mjs` **91 断言 / 91 passed / 0 failed**；`npm run lint` exit 0。上文 §5 的 99/91 为 10-17 早间数字，保留不改。
+- 版本：**0.1.2**（`package.json`、`index.js` 的 `PLUGIN_VERSION`、`package-lock.json`、`scripts/test-host.mjs:86` 断言四处同步）。
+- 文档：`design.md`、`api-reference.md`、`packaging-and-offline-install.md`、`releases/README.md` 已按 0.1.2 同步。
+- 未修复：P1-4（CSP `unsafe-inline`）、P1-5（`workflows.js` preflight catch）、P1-6（`repos.discover` 枚举）、P2-2/3/4/6，以及 `web/index.html:491` 的 `hbarReviewers` tooltip 守卫缺失——均为已知未覆盖项，理由见 fix-release 文档「未修复项」一节。

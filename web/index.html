@@ -134,6 +134,7 @@ button{font:inherit;cursor:pointer}
 .tgl{display:inline-flex;align-items:center;gap:var(--sp-1);font-size:var(--fs-sm);color:var(--muted);background:var(--panel);border:1px solid var(--border);border-radius:var(--r-full);padding:var(--sp-1) var(--sp-3);cursor:pointer;user-select:none;transition:color var(--dur-fast),border-color var(--dur-fast),background var(--dur-fast)}
 .tgl input{accent-color:var(--accent);margin:0}
 .tgl.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.tgl:disabled{opacity:.55;cursor:not-allowed}
 .mrlist{display:flex;flex-direction:column}
 .mrrow{display:flex;gap:var(--sp-2);align-items:flex-start;padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--border2);cursor:pointer;transition:background var(--dur-fast)}
 .mrrow:last-child{border-bottom:0}
@@ -494,7 +495,7 @@ function hbarReviewers(rows){ if(!rows.length) return `<div class="empty">暂无
     + `<div class="legend"><span><span class="dot" style="background:var(--purple)"></span>评审次数</span><span><span class="dot" style="background:var(--yellow)"></span>检视意见</span></div>`; }
 
 /* ================= views ================= */
-function kpi(cls,lab,val,sub,hashP){ return `<a class="card kpi ${esc(cls)}" style="color:inherit" href="${esc(hashP)}"><div class="lab">${esc(lab)}</div><div class="val">${fmtNum(val)}</div>${sub?`<div class="sub">${sub}</div>`:""}</a>`; }
+function kpi(cls,lab,val,sub,hashP){ return `<a class="card kpi ${esc(cls)}" style="color:inherit" href="${esc(hashP)}"><div class="lab">${esc(lab)}</div><div class="val">${typeof val==="number"?fmtNum(val):esc(val)}</div>${sub?`<div class="sub">${esc(sub)}</div>`:""}</a>`; }
 
 function coverageNote(c=state.overview?.coverage){return `<div class="notice${c?.limited?" warn":""}">${esc(c?.note||"统计仅反映当前已拉取的数据，不代表完整历史。")}</div>`;}
 function partialErrors(errors,guidance="请刷新重试，并在 GitHub 核对完整数据。"){
@@ -512,6 +513,7 @@ function countLabel(rows,total){const n=Array.isArray(rows)?rows.length:0;const 
 const DETAIL_RETRY_NOTE="部分信息未返回，当前详情不完整。请重新打开此详情重试，并在 GitHub 核对完整数据。";
 function detailErrors(...sources){ const merged=[...new Set(sources.flat().filter(Boolean))]; return merged.length?partialErrors(merged,DETAIL_RETRY_NOTE):""; }
 function viewOverview(){const ov=state.overview;if(!ov)return overviewPlaceholder();const s=ov.summary;
+  const resKnown=s.resolutionAvailable===true;
   return `<div class="wrap">${overviewFailureNote()}${banner()}<div class="card" style="margin-bottom:var(--sp-4)"><div class="hd">我的工作收件箱</div><div class="bd">
     <p class="muted" style="margin:0 0 var(--sp-3)">先处理待评审、需回复与分配给我的 Issue；历史趋势请查看「统计」。</p>
     <div class="inline-actions"><a class="btn primary" href="#/mrs&needsReview=1">处理待评审 MR (${fmtNum(s.needsReview)})</a><a class="btn" href="#/reviews&needsReply=1">回复检视意见 (${fmtNum(s.needsReply)})</a>
@@ -524,6 +526,7 @@ function viewOverview(){const ov=state.overview;if(!ov)return overviewPlaceholde
   </div>${coverageNote()}<div class="card"><div class="hd">最近工作动态</div><div class="feed">${ov.recent.map(feedRow).join("")||'<div class="empty">暂无动态；可在设置添加仓库或组织。</div>'}</div></div></div>`;}
 function viewStats(){ const ov=state.overview; if(!ov) return overviewPlaceholder();
   const s=ov.summary;
+  const resKnown=s.resolutionAvailable===true;
   return `<div class="wrap">
   ${overviewFailureNote()}${banner()}${coverageNote()}
   <div class="grid kpis">
@@ -531,8 +534,8 @@ function viewStats(){ const ov=state.overview; if(!ov) return overviewPlaceholde
     ${kpi("soft","已关闭 Issue",s.closedIssues,"","#/issues&state=closed")}
     ${kpi("soft","分配给我的 Issue",s.assignedIssues,"按已配置登录名统计","#/issues&state=open&assignee="+encodeURIComponent(state.boot?.config?.me?.login||""))}
     ${kpi("","开放 MR",s.openMrs,s.drafts?`含 ${s.drafts} 个草稿`:"","#/mrs&state=open")}
-    ${kpi(s.needsReview?"warn":"","待我评审",s.needsReview,s.me?`身份：${esc(s.me.name)}`:"未配置身份","#/mrs&needsReview=1")}
-    ${kpi(s.unresolvedComments?"warn":"","未解决检视意见",s.unresolvedComments,`共 ${fmtNum(s.totalComments)} 条`,"#/reviews&unresolved=1")}
+    ${kpi(s.needsReview?"warn":"","待我评审",s.needsReview,s.me?`身份：${s.me.name}`:"未配置身份","#/mrs&needsReview=1")}
+    ${kpi(s.unresolvedComments?"warn":"","未解决检视意见",resKnown?s.unresolvedComments:"—",resKnown?`共 ${fmtNum(s.totalComments)} 条`:"线程解决状态未知","#/reviews&unresolved=1")}
     ${kpi(s.needsReply?"hot":"","需我回复",s.needsReply,"","#/reviews&needsReply=1")}
     ${kpi(s.failingCi?"warn":"ok","CI 失败（开放中）",s.failingCi,"","#/mrs&state=open&ci=failure")}
     ${kpi("soft","本周合并",s.mergedThisWeek,`累计合并 ${fmtNum(s.mergedMrs)}`,"#/mrs&state=merged")}
@@ -566,6 +569,8 @@ function banner(){ const ov=state.overview; if(!ov||state.bannerClosed) return "
 
 function viewMrs(){ const ov=state.overview; if(!ov) return overviewPlaceholder();
   const f=state.mrFilters; const data=state.mrData;
+  const resKnown=ov.summary?.resolutionAvailable===true;
+  const unresOn=resKnown&&f.unresolved;
   const repoOpts=ov.repos.map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("");
   const rows=data?data.mrs:[];
   const body=!data?(state.mrError?listFailure(state.mrError):`<div class="empty">加载中…</div>`):rows.length?rows.map(mrRow).join(""):`<div class="empty">当前已返回数据中没有符合条件的 MR</div>`;
@@ -576,7 +581,7 @@ function viewMrs(){ const ov=state.overview; if(!ov) return overviewPlaceholder(
     <select id="fState" aria-label="MR 状态">${[["all","全部状态"],["open","开放"],["merged","已合并"],["closed","已关闭"]].map(([v,l])=>`<option value="${v}"${f.state===v?" selected":""}>${l}</option>`).join("")}</select>
     <input type="search" id="fQ" aria-label="搜索 MR" placeholder="搜索标题 / 作者 / 分支 / #号" value="${esc(f.q)}" />
     <label class="tgl${f.needsReview?" on":""}"><input type="checkbox" id="fNeeds"${f.needsReview?" checked":""}/>待我评审</label>
-    <label class="tgl${f.unresolved?" on":""}"><input type="checkbox" id="fUnres"${f.unresolved?" checked":""}/>有未解决意见</label>
+    <label class="tgl${unresOn?" on":""}" title="${resKnown?"":"线程解决状态未知，暂不可用"}"><input type="checkbox" id="fUnres"${unresOn?" checked":""}${resKnown?"":" disabled"}/>有未解决意见</label>
     <select id="fCi" aria-label="CI 状态">${[["","全部 CI"],["success","CI 成功"],["failure","CI 失败"],["pending","CI 进行中"],["none","无 CI"],["unknown","CI 未查询"]].map(([v,l])=>`<option value="${v}"${f.ci===v?" selected":""}>${l}</option>`).join("")}</select>
     <select id="fSort" aria-label="MR 排序">${[["updated","按更新排序"],["created","按创建排序"],["comments","按意见数排序"]].map(([v,l])=>`<option value="${v}"${f.sort===v?" selected":""}>${l}</option>`).join("")}</select>
     <div class="spacer" style="flex:1"></div>
@@ -603,6 +608,8 @@ function mrRow(m){ return `<div class="mrrow" role="button" tabindex="0" data-mr
 
 function viewReviews(){ const ov=state.overview; if(!ov) return overviewPlaceholder();
   const f=state.rvFilters; const data=state.rvData;
+  const resKnown=ov.summary?.resolutionAvailable===true;
+  const unresOn=resKnown&&f.unresolved;
   const repoOpts=ov.repos.map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("");
   let groups="";
   if(!data) groups=state.rvError?`<div class="card">${listFailure(state.rvError)}</div>`:`<div class="card"><div class="empty">加载中…</div></div>`;
@@ -621,7 +628,7 @@ function viewReviews(){ const ov=state.overview; if(!ov) return overviewPlacehol
   ${overviewFailureNote()}
   <div class="toolbar">
     <select id="rRepo" aria-label="检视意见仓库"><option value="">全部仓库</option>${repoOpts}</select>
-    <label class="tgl${f.unresolved?" on":""}"><input type="checkbox" id="rUnres"${f.unresolved?" checked":""}/>未解决</label>
+    <label class="tgl${unresOn?" on":""}" title="${resKnown?"":"线程解决状态未知，暂不可用"}"><input type="checkbox" id="rUnres"${unresOn?" checked":""}${resKnown?"":" disabled"}/>未解决</label>
     <label class="tgl${f.needsReply?" on":""}"><input type="checkbox" id="rReply"${f.needsReply?" checked":""}/>需我回复</label>
     <input type="search" id="rQ" aria-label="搜索检视意见" placeholder="搜索内容 / 作者 / 文件" value="${esc(f.q)}" />
     <div style="flex:1"></div><span class="count-pill">${data?countLabel(data.comments,data.total):"—"}</span>
@@ -650,6 +657,7 @@ function viewRepos(){ const ov=state.overview; if(!ov) return overviewPlaceholde
   return `<div class="wrap">${overviewFailureNote()}<div class="grid repogrid">${ov.repos.map(repoCard).join("")}</div></div>`; }
 
 function repoCard(r){ const c=r.counts; const tot=Math.max(1,c.open+c.merged+c.closed);
+  const resKnown=state.overview?.summary?.resolutionAvailable===true;
   return `<div class="card repo"><div class="bd">
     <div class="hd"><span class="nm">${esc(r.name)}</span><span class="owner">${esc(r.owner)}/</span>
       <div style="flex:1"></div>${chip("src",SRC_CH[r.source]||r.source)}</div>
@@ -657,7 +665,7 @@ function repoCard(r){ const c=r.counts; const tot=Math.max(1,c.open+c.merged+c.c
     <div class="nums">
       <div><div class="n" style="color:var(--green)">${c.open}</div><div class="l">开放</div></div>
       <div><div class="n" style="color:var(--accent)">${c.needsReview}</div><div class="l">待我评审</div></div>
-      <div><div class="n" style="color:var(--yellow)">${c.unresolved}</div><div class="l">未解决意见</div></div>
+      <div><div class="n" style="color:var(--yellow)" title="${resKnown?"":"线程解决状态未知，暂不可用"}">${resKnown?c.unresolved:"—"}</div><div class="l">未解决意见</div></div>
       <div><div class="n" style="color:var(--red)">${c.failingCi}</div><div class="l">CI 失败</div></div>
       <div><div class="n" style="color:var(--purple)">${c.mergedWeek}</div><div class="l">本周合并</div></div>
     </div>

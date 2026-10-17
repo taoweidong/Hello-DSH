@@ -30,7 +30,7 @@ import { createWorkflows } from './workflows.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const webRoot = join(here, 'web')
-const PLUGIN_VERSION = '0.1.1'
+const PLUGIN_VERSION = '0.1.2'
 
 const MAX_EXEC_BUFFER = 16 * 1024 * 1024
 const EXEC_TIMEOUT_MS = 30_000
@@ -716,7 +716,9 @@ function createFetcher(store, log) {
     if (cfg.provider === 'http') return false
     const exe = ghExecutable(cfg)
     if (!exe) return false
-    if (Date.now() - ghOkCache.at < 5 * 60_000) return ghOkCache.ok
+    const age = Date.now() - ghOkCache.at
+    const ttl = ghOkCache.ok ? 300_000 : 60_000
+    if (age < ttl) return ghOkCache.ok
     const probe = await ghProbe(cfg)
     ghOkCache = { at: Date.now(), ok: !!probe.ok, loggedIn: !!probe.loggedIn }
     return ghOkCache.ok
@@ -1102,6 +1104,14 @@ export function apply(ctx, loaderConfig = {}) {
     },
   })
   let reviewLoad = null
+  let saveRefresh = null
+  const queueRefreshAfterSave = () => {
+    if (saveRefresh) return saveRefresh
+    saveRefresh = snapshots(false)
+      .catch(err => log?.warn?.('[codehub] refresh after save failed:', err.message))
+      .finally(() => { saveRefresh = null })
+    return saveRefresh
+  }
   const reviewSnapshots = async () => {
     if (reviewLoad) return reviewLoad
     const rev = store.rev
@@ -1207,6 +1217,8 @@ export function apply(ctx, loaderConfig = {}) {
             const loaded = await reviewSnapshots(); const snaps = loaded.snapshots; const meLogin = (cfg.me?.login || '').trim(); let comments = []
             for (const snap of snaps) for (const mr of snap.mrs ?? []) for (const c of mr.comments ?? []) comments.push({ id: c.id, repoKey: snap.repoKey, repoPath: snap.repo?.path, repoName: snap.repo?.name, mrNumber: mr.number, mrTitle: mr.title, mrState: mr.state, mrUrl: mr.url || '', author: c.author, body: c.body, file: c.file, line: c.line, createdAt: c.createdAt, resolved: c.resolved ?? null, needsReply: commentNeedsReply(mr, c, meLogin), kind: c.kind || 'comment' })
             const rk = q.get('repoKey') || ''; if (rk) comments = comments.filter((c) => c.repoKey === rk)
+            // 该筛选依赖线程解决状态，当前数据源恒为 null（REST 不返回线程解决状态，未知不冒充 false），
+            // 故 unresolved=1 的结果必然为空；前端在 resolutionAvailable!==true 时已禁用该入口。
             if (q.get('unresolved') === '1') comments = comments.filter((c) => c.resolved === false)
             if (q.get('needsReply') === '1') comments = comments.filter((c) => c.needsReply)
             const s = (q.get('q') || '').toLowerCase(); if (s) comments = comments.filter((c) => c.body?.toLowerCase().includes(s) || c.author?.name?.toLowerCase().includes(s) || c.file?.toLowerCase().includes(s) || c.mrTitle?.toLowerCase().includes(s))
@@ -1221,7 +1233,7 @@ export function apply(ctx, loaderConfig = {}) {
             if (req.method !== 'POST') { sendJson({ ok: false, error: 'POST required' }, 405); return }
             await store.set(await payload()); fetcher.invalidate()
             sendJson({ ok: true, config: store.masked(), overview: null, refreshQueued: true })
-            snapshots(true).catch(err => log?.warn?.('[codehub] refresh after save failed:', err.message)); return
+            queueRefreshAfterSave(); return
           }
           if (op === 'config.test') {
             if (req.method !== 'POST') { sendJson({ ok: false, error: 'POST required' }, 405); return }

@@ -602,3 +602,130 @@ test('masked tokens are labelled and focus-selectable, not presented as real val
   assert.match(content, /value="\*\*\*\*abcd"/);
   assert.match(content, /data-k="token"/);
 });
+
+// --- W4: kpi() sub escaping (P2-1) -----------------------------------------
+
+function overviewWith(s, extra = {}) {
+  s.sandbox.EXTRA = extra;
+  s.run(`state.overview={summary:Object.assign({repos:1,errors:0},EXTRA),repos:[],activity:[],statusDist:{open:0,merged:0,closed:0},topReviewers:[],recent:[],coverage:{limited:true,note:'n'}}`);
+}
+
+test('kpi sub escapes markup from values instead of executing it', () => {
+  const s = spa();
+  const evil = s.run(`kpi("","身份",1,"<img src=x onerror=alert(1)>","#/x")`);
+  assert.match(evil, /<div class="sub">&lt;img src=x onerror=alert\(1\)&gt;<\/div>/);
+  assert.doesNotMatch(evil, /<img/, 'no raw markup tag may survive inside the sub element');
+  assert.doesNotMatch(evil, /&amp;lt;/, 'escaping must not be applied twice (no double escape)');
+});
+
+test('kpi sub does not double-escape an ampersand that is already data', () => {
+  const s = spa();
+  const content = s.run(`kpi("","身份",1,"A &amp; B","#/x")`);
+  assert.match(content, /<div class="sub">A &amp;amp; B<\/div>/, 'a literal &amp; in the value is escaped exactly once');
+  assert.doesNotMatch(content, /A &amp; B</, 'the raw entity must not be emitted unescaped');
+});
+
+test('overview identity KPI renders an escaped name without double escaping', () => {
+  const s = spa();
+  overviewWith(s, { me: { name: 'a<b>&c' } });
+  const content = s.run('viewStats()');
+  assert.match(content, /身份：a&lt;b&gt;&amp;c/, 'the login-derived name is escaped at the kpi boundary');
+  assert.doesNotMatch(content, /身份：a<b>/, 'unescaped name must never reach the markup');
+  assert.doesNotMatch(content, /&amp;lt;/, 'the name must not be escaped twice');
+});
+
+// --- W4: honest degradation for unknown thread resolution (P1-1 front half) --
+
+test('unknown resolution hides the constant-zero unresolved KPI behind explicit wording', () => {
+  const s = spa();
+  for (const resolutionAvailable of [undefined, false]) {
+    overviewWith(s, { resolutionAvailable, unresolvedComments: 0, totalComments: 12 });
+    const content = s.run('viewStats()');
+    const card = content.match(/<a class="card kpi[^"]*"[^>]*>[\s\S]*?未解决检视意见[\s\S]*?<\/a>/)[0];
+    assert.match(card, /线程解决状态未知/, `resolutionAvailable=${resolutionAvailable} must disclose unknown state`);
+    assert.doesNotMatch(card, /共 12 条/, 'the misleading total/sub pairing must not appear');
+    assert.doesNotMatch(card, /<div class="val">0<\/div>/, 'an unknowable count must not be presented as a real zero');
+    assert.doesNotMatch(card, /NaN/, 'the KPI value must not render as NaN');
+    assert.match(card, /<div class="val">—<\/div>/, 'the value is an explicit unknown marker, not a number');
+  }
+});
+
+test('known resolution shows the real unresolved KPI instead of the unknown wording', () => {
+  const s = spa();
+  overviewWith(s, { resolutionAvailable: true, unresolvedComments: 0, totalComments: 12 });
+  const zero = s.run('viewStats()');
+  const zeroCard = zero.match(/<a class="card kpi[^"]*"[^>]*>[\s\S]*?未解决检视意见[\s\S]*?<\/a>/)[0];
+  assert.match(zeroCard, /<div class="val">0<\/div>/, 'a genuine zero is reported as zero');
+  assert.match(zeroCard, /共 12 条/);
+  assert.doesNotMatch(zeroCard, /线程解决状态未知|NaN/);
+  overviewWith(s, { resolutionAvailable: true, unresolvedComments: 5, totalComments: 12 });
+  const five = s.run('viewStats()');
+  assert.match(five.match(/<a class="card kpi[^"]*"[^>]*>[\s\S]*?未解决检视意见[\s\S]*?<\/a>/)[0], /<div class="val">5<\/div>/);
+});
+
+test('MR and review unresolved filters are disabled while resolution is unknown', () => {
+  const s = spa();
+  for (const resolutionAvailable of [undefined, false]) {
+    overviewWith(s, { resolutionAvailable });
+    s.run('state.mrFilters.unresolved=true;state.rvData={comments:[],total:0};state.rvFilters.unresolved=true');
+    const mrs = s.run('viewMrs()');
+    assert.match(mrs, /<label class="tgl" title="线程解决状态未知，暂不可用"><input type="checkbox" id="fUnres" disabled\/>/,
+      `fUnres must be visibly disabled when resolutionAvailable=${resolutionAvailable}`);
+    assert.doesNotMatch(mrs, /id="fUnres" checked/, 'a stale unresolved filter must not render as active');
+    const reviews = s.run('viewReviews()');
+    assert.match(reviews, /<label class="tgl" title="线程解决状态未知，暂不可用"><input type="checkbox" id="rUnres" disabled\/>/,
+      `rUnres must be visibly disabled when resolutionAvailable=${resolutionAvailable}`);
+    assert.doesNotMatch(reviews, /id="rUnres" checked/);
+  }
+});
+
+test('MR and review unresolved filters become usable once resolution is known', () => {
+  const s = spa();
+  overviewWith(s, { resolutionAvailable: true });
+  s.run('state.mrFilters.unresolved=true;state.rvData={comments:[],total:0};state.rvFilters.unresolved=true');
+  const mrs = s.run('viewMrs()');
+  assert.match(mrs, /<label class="tgl on" title=""><input type="checkbox" id="fUnres" checked\/>/,
+    'a known-resolution filter must render as an active, enabled control');
+  assert.doesNotMatch(mrs, /id="fUnres"[^>]*disabled/);
+  const reviews = s.run('viewReviews()');
+  assert.match(reviews, /<label class="tgl on" title=""><input type="checkbox" id="rUnres" checked\/>/);
+  assert.doesNotMatch(reviews, /id="rUnres"[^>]*disabled/);
+});
+
+test('repo card unresolved count is unknown rather than a fabricated zero', () => {
+  const s = spa();
+  const card = `repoCard({name:'a',owner:'o',counts:{open:1,merged:0,closed:0,needsReview:0,unresolved:0,failingCi:0,mergedWeek:0}})`;
+  for (const resolutionAvailable of [undefined, false]) {
+    overviewWith(s, { resolutionAvailable });
+    const unknown = s.run(card);
+    assert.match(unknown, /title="线程解决状态未知，暂不可用">—<\/div><div class="l">未解决意见/,
+      `repo unresolved must read as unknown when resolutionAvailable=${resolutionAvailable}`);
+    assert.doesNotMatch(unknown, />0<\/div><div class="l">未解决意见/, 'unknown must not be shown as a real zero');
+  }
+  overviewWith(s, { resolutionAvailable: true });
+  const known = s.run(card);
+  assert.match(known, /title="">0<\/div><div class="l">未解决意见/, 'a genuine zero is shown once resolution is known');
+});
+
+test('drawer notice discloses unknown thread resolution when the field is absent', async () => {
+  const s = spa();
+  const detail = { diff: 'd', files: [], mr: { number: 6, title: 'T', state: 'open', reviews: [], comments: [] }, repo: {} };
+  overviewWith(s, {});
+  s.sandbox.answer = async () => detail;
+  await s.run(`api=answer;openMr('repo',6)`);
+  const unknown = s.node('#drawerBody').innerHTML;
+  assert.match(unknown, /线程解决状态可能未知/, 'the drawer must hedge when resolution is unknowable');
+  assert.doesNotMatch(unknown, /评论线程解决状态来自接口返回/, 'the definitive wording must not appear while the field is absent');
+  overviewWith(s, { resolutionAvailable: true });
+  await s.run(`openMr('repo',7)`);
+  const known = s.node('#drawerBody').innerHTML;
+  assert.match(known, /评论线程解决状态来自接口返回/, 'the definitive wording appears once resolution is known');
+  assert.doesNotMatch(known, /线程解决状态可能未知/);
+});
+
+test('mr row keeps reporting comment and unresolved counts under unknown resolution', () => {
+  const s = spa();
+  overviewWith(s, {});
+  const row = s.run(`mrRow({repoKey:'r',number:1,title:'t',commentCount:3,unresolvedCount:2})`);
+  assert.match(row, /💬 3\s*<b style="color:var\(--red\)">\(2\)<\/b>/, 'the three-state comment count is unaffected by the degradation');
+});

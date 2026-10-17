@@ -1,6 +1,6 @@
 # dsh-codehub-dashboard 设计文档
 
-> 版本：0.1.1 | 最后更新：2026-10-17
+> 版本：0.1.2 | 最后更新：2026-10-17
 >
 > 本文描述**当前实现**。与早期草案的三处结构性差异：不再依赖 dsh-better-sidebar（改用 DSH 原生 `slots`/`layout`/`uiWorkspace`）；新增 `workflows.js`（原生模型检视 + Issue 开发会话 + 审计持久化）；HTTP 路由加入 DSH 原生 `connection` 信任校验。
 >
