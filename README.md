@@ -10,7 +10,7 @@
 [![DSH](https://img.shields.io/badge/DSH-%3E%3D0.2.0--rc.2%20%3C0.3.0-blueviolet)](package.json)
 [![runtime deps](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](package.json)
 
-> **npm**：`0.1.3` 已于 2026-10-17 发布（`latest`）。安装、校验、升级 / 回滚与包内容说明见 [docs/npm-package.md](docs/npm-package.md)。
+> **npm**：包名 `dsh-codehub-dashboard`；当前发布版本以 `npm view dsh-codehub-dashboard version` 为准。安装、校验、升级 / 回滚与包内容说明见 [docs/npm-package.md](docs/npm-package.md)。
 
 ## 特性
 
@@ -37,13 +37,13 @@
 
 ### 通过 npm 安装（推荐）
 
-> npm 上 `latest = 0.1.3`（2026-10-17 发布）；`npm view dsh-codehub-dashboard version` 应返回 `0.1.3`。
+> 当前发布版本以 `npm view dsh-codehub-dashboard version` 为准。
 
 ```sh
 dsh plugin --profile web add dsh-codehub-dashboard
 ```
 
-需要固定版本时追加 `@<version>`，例如 `dsh-codehub-dashboard@0.1.3`。npm 包的校验、升级、回滚与包内容说明见 [docs/npm-package.md](docs/npm-package.md)。
+需要固定版本时追加 `@<version>`。npm 包的校验、升级、回滚与包内容说明见 [docs/npm-package.md](docs/npm-package.md)。
 
 ### 从源码或本地目录安装
 
@@ -56,7 +56,7 @@ dsh plugin --profile web add /path/to/dsh-codehub-dashboard
 
 ```sh
 npm pack
-dsh plugin --profile web add ./dsh-codehub-dashboard-0.1.3.tgz --offline
+dsh plugin --profile web add ./dsh-codehub-dashboard-<version>.tgz --offline
 ```
 
 完整的打包、离线交付、手动摆放、卸载与回滚步骤见 [docs/packaging-and-offline-install.md](docs/packaging-and-offline-install.md)。
