@@ -180,3 +180,53 @@ test('API validates writes, exposes Issues and does not block config saves on up
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 })
+
+// A repo whose fetch fails contributes zero rows. Without `errors`/`coverage`
+// the SPA renders that as a clean board, which reads as "nothing to review".
+test('mrs op reports failing repositories and limited coverage instead of a clean board', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'codehub-mrs-'))
+  const originalFetch = globalThis.fetch
+  const effects = [], routes = []
+  t.mock.method(globalThis, 'fetch', async (input, options = {}) => {
+    const url = new URL(input)
+    if (url.hostname === '127.0.0.1') return originalFetch(input, options)
+    assert.equal(url.hostname, 'api.github.com')
+    if (url.pathname === '/repos/fixture/broken/pulls') return new Response('upstream gateway timeout', { status: 503 })
+    if (url.pathname === '/repos/fixture/ok/pulls') return new Response(JSON.stringify([{
+      number: 5, title: 'Healthy work', state: 'open', user: { login: 'ana' },
+      created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-06T00:00:00Z',
+      head: { ref: 'topic' }, base: { ref: 'main' }, html_url: 'https://github.com/fixture/ok/pull/5',
+    }]))
+    if (url.pathname === '/repos/fixture/ok/issues') return new Response(JSON.stringify([]))
+    assert.fail(`unexpected upstream request: ${url.pathname}`)
+  })
+  apply({ connection: { admit() { return { peer: {} } } }, logger: { warn() {} }, effect(fn) { effects.push(fn()) }, webServer: { register(route) { routes.push(route); return () => {} } } }, { configPath: join(dir, 'config.json') })
+  const server = createServer(routes[0].handler)
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${server.address().port}/codehub/api?op=`
+  const saveConfig = (patch) => fetch(base + 'config.set', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+  try {
+    const saved = await saveConfig({ provider: 'http', instances: [{ id: 'gh', host: 'github.com', token: 'fixture-only' }], repos: [{ instance: 'gh', path: 'fixture/broken' }, { instance: 'gh', path: 'fixture/ok' }] })
+    assert.equal(saved.status, 200)
+
+    const degraded = await (await fetch(base + 'mrs')).json()
+    assert.equal(degraded.ok, true)
+    assert.deepEqual(degraded.errors.map(e => e.repoKey), ['gh:fixture/broken'], 'the failing repo must be listed')
+    assert.match(degraded.errors[0].error, /503/)
+    assert.equal(degraded.errors.length, 1, 'the healthy repo must not be reported as failing')
+    assert.equal(degraded.total, 1)
+    assert.deepEqual(degraded.mrs.map(m => `${m.repoKey}#${m.number}`), ['gh:fixture/ok#5'])
+    assert.equal(degraded.coverage.limited, true)
+    assert.match(degraded.coverage.note, /不是完整历史统计/)
+
+    const resaved = await saveConfig({ repos: [{ instance: 'gh', path: 'fixture/ok' }] })
+    assert.equal(resaved.status, 200)
+    const healthy = await (await fetch(base + 'mrs')).json()
+    assert.equal(healthy.ok, true)
+    assert.deepEqual(healthy.errors, [], 'a fully successful refresh reports an empty errors array')
+  } finally {
+    for (const dispose of effects) await dispose?.()
+    await new Promise(resolve => server.close(resolve))
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})

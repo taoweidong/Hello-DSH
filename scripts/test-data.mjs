@@ -71,6 +71,37 @@ test('overview includes issue counts and explains sampling', () => {
   assert.equal(overview.repos[0].counts.openIssues, 1)
 })
 
+// `unresolvedComments: 0` has two very different meanings: "no thread is
+// unresolved" vs "resolution was never fetched" (REST list payloads carry no
+// thread state). resolutionAvailable tells the two apart without changing the
+// unresolved/needsReply filters, which keep only an explicit `resolved === false`.
+test('overview reports whether comment resolution is knowable', () => {
+  const overview = (mrs) => data.buildOverview([{ repoKey: 'gh:a/b', repo: { path: 'a/b' }, mrs, issues: [] }], { me: { login: 'me' } }).summary
+  const mr = (comments) => ({ number: 1, state: 'open', author: { login: 'me' }, comments, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-02T00:00:00Z' })
+
+  const unknown = overview([mr([
+    { author: { login: 'other' }, createdAt: '2026-10-01T00:00:00Z' },
+    { resolved: null, author: { login: 'other' }, createdAt: '2026-10-01T00:00:00Z' },
+  ])])
+  assert.equal(unknown.resolutionAvailable, false)
+  assert.equal(unknown.unresolvedComments, 0)
+  assert.equal(unknown.needsReply, 0)
+  assert.equal(unknown.unknownResolutionComments, 2)
+
+  const mixed = overview([mr([
+    { resolved: true, author: { login: 'other' }, createdAt: '2026-10-01T00:00:00Z' },
+    { resolved: null, author: { login: 'other' }, createdAt: '2026-10-01T00:00:00Z' },
+    { resolved: false, author: { login: 'other' }, createdAt: '2026-10-01T00:00:00Z' },
+  ])])
+  assert.equal(mixed.resolutionAvailable, true)
+  assert.equal(mixed.unresolvedComments, 1, 'a resolved:true thread must not count as unresolved')
+  assert.equal(mixed.needsReply, 1)
+  assert.equal(mixed.unknownResolutionComments, 1)
+
+  assert.equal(overview([mr([])]).resolutionAvailable, true, 'zero comments is a trustworthy zero')
+  assert.equal(data.buildOverview([], { me: { login: '' } }).summary.resolutionAvailable, true)
+})
+
 test('organization expansion deduplicates by instance and retains disabled explicit overrides', () => {
   assert.equal(typeof data.mergeRepos, 'function')
   const cfg = { repos: [{ instance: 'gh', path: 'a/b', localPath: '/checkout', enabled: true }, { instance: 'gh', path: 'a/c', enabled: false }] }

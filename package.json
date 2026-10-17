@@ -1,6 +1,6 @@
 {
   "name": "dsh-codehub-dashboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH native CodeHub workspace: GitHub organization, PR and Issue dashboard with native AI review drafts and Issue development sessions.",
   "license": "MIT",
   "type": "module",
@@ -27,7 +27,9 @@
   "scripts": {
     "test": "node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs && node scripts/test-host.mjs",
     "lint": "eslint .",
-    "dev": "node scripts/dev.mjs"
+    "dev": "node scripts/dev.mjs",
+    "check:version": "node scripts/check-version.mjs",
+    "precommit": "npm run lint && npm test"
   },
   "publishConfig": {
     "access": "public",
@@ -39,7 +41,7 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": ">=18",
+    "node": ">=18.18",
     "dsh": ">=0.2.0-rc.2 <0.3.0"
   },
   "peerDependencies": {

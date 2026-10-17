@@ -13,7 +13,7 @@ DSH 原生 CodeHub 插件：在左侧导航中聚合 GitHub 仓库和组织的 P
 
 ## 要求与安装
 
-- DSH `>=0.2.0-rc.2 <0.3.0`，Node.js 18+。
+- DSH `>=0.2.0-rc.2 <0.3.0`，Node.js 18.18+（`engines.node`；CI 用 18/20/22 三档）。
 - 使用原生 `slots`、`layout`、`uiWorkspace` 与 `connection` 服务，**不需要 dsh-better-sidebar**。
 - 默认使用已安装并登录的 [GitHub CLI](https://cli.github.com/)；也可配置 GitHub REST token。
 - AI 检视需要宿主提供 `llm` 和 `sessions`，Issue 开发需要 `sessionController`。缺少服务时对应动作不可用，不会降级到自建 Agent。
@@ -46,7 +46,7 @@ dsh plugin --profile desktop add E:/GitHub/dsh-codehub-dashboard
 - 组织仓库和按需评论使用分页；评论收件箱仍受每仓库 `http.detailLimit` 预算约束。
 - REST 评论不包含完整线程解决状态，未知状态显示为未知，**不计为未解决**。普通讨论评论也不自动计为未解决。
 - diff、模型输入和输出有大小限制；截断时明确提示检视范围有限。
-- 列表页分开呈现三种状态：整列请求失败、部分仓库失败、样本覆盖受限；PR/Issue 详情若某个分段（评论、diff 等）未返回，会在页面内单独提示并建议重新打开详情重试，不会用空列表冒充「没有意见」。
+- 列表页分开呈现三种状态：整列请求失败、部分仓库失败、样本覆盖受限；PR/Issue 详情若某个分段（评论、diff 等）未返回，会在页面内单独提示并建议重新打开详情重试，不会用空列表冒充「没有意见」。PR 列表响应同样携带 `errors` 与 `coverage`，拉取失败的仓库不会从列表里静默消失，而是显式列为失败并把样本标为受限。
 - 检视草稿绑定生成时的 PR head SHA。发布前重新检查 PR 状态和 SHA；已变更或关闭时拒绝发布。
 - 远端发布结果不确定时保存 `publish_unknown` 状态，禁止自动重试，避免重复评论；须先到 GitHub 核实。
 - Issue 会话创建及 prompt 使用持久化的 sessionId/requestId；重试沿用原身份，不重新提交另一份任务。宿主 `sessionController.prompt(request, signal)` 需要第二个 AbortSignal 参数，它只约束准入（admission）之前的等待；准入超时后关联保持 pending，重试复用同一 requestId 而不是新建任务。
@@ -97,7 +97,7 @@ npm run dev
 | `scripts/` | 单元/集成测试和隔离开发服务 |
 | `docs/` | 设计、API、gh CLI 契约、打包交付与验证报告 |
 | `releases/` | 交付件归档（`.tgz` 不入 git，仅 README 保留目录） |
-| `.github/workflows/` | CI（lint + test，node 18/20/22）与 tag 触发的 npm 发布 |
+| `.github/workflows/` | CI（`npm ci` + lint + test，node 18/20/22；18 取最新 18.x，满足 engines >=18.18）与 tag 触发的 npm 发布（tag/版本一致性与 9 文件打包门禁） |
 | `AGENTS.md` | 贡献者契约：测试全绿方可提交推送、契约字段交叉核对 |
 
 ## API

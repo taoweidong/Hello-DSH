@@ -1,6 +1,6 @@
 # API Reference
 
-> dsh-codehub-dashboard v0.1.0 HTTP API 完整参考 | 最后更新：2026-10-17
+> dsh-codehub-dashboard v0.1.1 HTTP API 完整参考 | 最后更新：2026-10-17
 
 ## Base URL
 
@@ -41,7 +41,7 @@ POST body 上限 256 KB，超限立即拒绝并短路后续数据事件。
 ```json
 {
   "ok": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "config": { /* 脱敏配置 */ },
   "configPath": "C:/Users/you/.dsh/codehub-dashboard/config.json",
   "capabilities": { "ai": true, "develop": true },
@@ -66,11 +66,15 @@ POST body 上限 256 KB，超限立即拒绝并短路后续数据事件。
   "repos": 3, "errors": 0,
   "openMrs": 12, "mergedMrs": 45, "closedMrs": 3,
   "needsReview": 4, "drafts": 2,
-  "unresolvedComments": 18, "needsReply": 5,
+  "unresolvedComments": 0, "unknownResolutionComments": 26, "resolutionAvailable": false,
+  "needsReply": 0,
   "failingCi": 1, "mergedThisWeek": 8, "totalComments": 67,
+  "openIssues": 9, "closedIssues": 40, "assignedIssues": 2,
   "me": { "login": "taowd", "name": "陶伟东" }
 }
 ```
+
+`resolutionAvailable=false` 时，`unresolvedComments: 0` 与 `needsReply: 0` 只表示「本次没有拿到线程解决状态」，不代表没有未解决意见；`unknownResolutionComments` 给出 `resolved == null` 的条数，UI 显示「未知」且不把相关评论计入未解决/待回复。无评论时 `resolutionAvailable` 为 `true`（0 是可信的）。当前 gh/REST provider 不返回线程解决状态，因此实际响应通常为 `unresolvedComments: 0`、`resolutionAvailable: false`。
 
 ---
 
@@ -127,7 +131,7 @@ MR 列表（多仓库聚合 + 筛选排序）。
 | `sort` | `updated\|created\|comments` | `updated` | `comments` 先按未解决数再按意见数 |
 | `limit` | number | 200 | 1–500 |
 
-**Response:** `{ ok, total, mrs[] }` —— `total` 为过滤后总数，`mrs` 为截断后的页。
+**Response:** `{ ok, total, mrs[], errors[], coverage }` —— `total` 为过滤后总数，`mrs` 为截断后的页；`errors` 为拉取失败的仓库（`[{repoKey,error}]`），`coverage` 与 overview 同口径，供 UI 显式提示样本不完整。
 
 返回字段（每条）：`number, title, author, state, draft, sourceBranch, targetBranch, createdAt, updatedAt, mergedAt, additions, deletions, changedFiles, labels, ciState, reviewDecision, requestedReviewers, url, needsMyReview, commentCount, unresolvedCount, needsReplyCount, reviewCount, repoKey, repoPath, repoName`。**不含** `reviews/comments` 正文，需要时走 `op=mr`。
 

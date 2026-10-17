@@ -1,6 +1,6 @@
 # dsh-codehub-dashboard 设计文档
 
-> 版本：0.1.0 | 最后更新：2026-10-17
+> 版本：0.1.1 | 最后更新：2026-10-17
 >
 > 本文描述**当前实现**。与早期草案的三处结构性差异：不再依赖 dsh-better-sidebar（改用 DSH 原生 `slots`/`layout`/`uiWorkspace`）；新增 `workflows.js`（原生模型检视 + Issue 开发会话 + 审计持久化）；HTTP 路由加入 DSH 原生 `connection` 信任校验。
 >
@@ -68,10 +68,10 @@
 
 | 模块 | 文件 | 行数 | 职责 |
 |------|------|------|------|
-| Host half | `index.js` | 1250 | 配置存储、gh/http/git provider、缓存与聚合、HTTP 路由与安全栅栏 |
+| Host half | `index.js` | 1265 | 配置存储、gh/http/git provider、缓存与聚合、HTTP 路由与安全栅栏 |
 | Workflows | `workflows.js` | 502 | 原生模型检视草稿、COMMENT 发布、Issue 开发会话、审计持久化 |
 | Client half | `client.js` | 90 | 原生左导航注册、iframe 容器、受限宿主桥接 |
-| Dashboard SPA | `web/index.html` | 962 | 7 个视图、详情抽屉、工作流交互、设置表单、内联 SVG 图表 |
+| Dashboard SPA | `web/index.html` | 995 | 7 个视图、详情抽屉、工作流交互、设置表单、内联 SVG 图表 |
 | Bundle patch | `cordis.patch.yml` | — | DSH loader 挂载声明 |
 | Tests / dev | `scripts/` | — | 数据/契约/工作流/SPA/集成测试与隔离开发服务 |
 
@@ -161,7 +161,7 @@ interface ReviewComment {
 | `needsReplyCount` | 未解决 && author ≠ me && (mr.author = me ∨ reviewDecision = changes_requested) |
 | `reviewCount` | `reviews.length` |
 
-`buildOverview` 输出 `summary / repos[] / statusDist / activity[30天] / topReviewers[8] / recent[24] / coverage / generatedAt`，其中 `coverage.note` 固定说明样本口径（gh 每仓库 200 条上限、HTTP 首批、按需评论、未获取线程不计未解决）。
+`buildOverview` 输出 `summary / repos[] / statusDist / activity[30天] / topReviewers[8] / recent[24] / coverage / generatedAt`，其中 `coverage.note` 固定说明样本口径（gh 每仓库 200 条上限、HTTP 首批、按需评论、未获取线程不计未解决）。`summary` 另带 `unknownResolutionComments`（`resolved == null` 的条数）与 `resolutionAvailable`（是否真的拿到过线程解决状态；无评论时为 true），防止 UI 把「拿不到解决状态」误读成「未解决为 0」。
 
 ---
 
@@ -309,6 +309,8 @@ review.publish {id,body?,confirmed:true}
 
 `config.set` 立即返回 `{ok, config:masked, overview:null, refreshQueued:true}`，随后在后台刷新 —— 保存不等待上游。
 
+`mrs` 响应为 `{ok,total,mrs,errors,coverage}`：`errors` 列出拉取失败的仓库，`coverage` 与 overview 共用 `buildCoverage()` 口径；失败仓库不会以空行静默消失。
+
 ---
 
 ## 9. Dashboard UI 设计
@@ -329,8 +331,8 @@ review.publish {id,body?,confirmed:true}
 
 | 情形 | 渲染 |
 |------|------|
-| 整列请求失败 | `listFailure(err)`：错误文案 + 重试入口，不显示空列表 |
-| 部分仓库失败 | `partialErrors(data.errors)`：列出失败仓库与原因 |
+| 整列请求失败 | `listFailure(err)`：错误文案 + 刷新重试提示，不显示空列表 |
+| 部分仓库失败 | `partialErrors(data.errors)`：列出失败仓库与原因；PR 列表由服务端 `errors` 提供，不再只靠前端推断 |
 | 样本受限 | `coverageNote(coverage)`：说明统计口径 |
 | 详情分段缺失 | `detailErrors(...)`：提示「部分信息未返回，当前详情不完整」，建议重新打开重试并在 GitHub 核对 |
 | 解决状态未知 | 显示「未知」，不计为未解决 |
@@ -347,15 +349,15 @@ review.publish {id,body?,confirmed:true}
 
 ## 10. 测试策略
 
-`npm test` = `node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs`（**84 用例**）**+** `node scripts/test-host.mjs`（**84 passed, 0 failed**）。
+`npm test` = `node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs`（**99 用例 / 99 pass / 0 fail**）**+** `node scripts/test-host.mjs`（**91 断言 / 91 passed / 0 failed**），合计 **190** 项检查。
 
 | 文件 | 用例 | 覆盖 |
 |------|------|------|
-| `scripts/test-data.mjs` | 20 | gh 字段契约、映射、CI 聚合、分页解析、`githubRequest` 回退规则 |
-| `scripts/test-api.mjs` | 3 | store 归一化、provider 调度与缓存、filterMrs、鉴权与路由 |
-| `scripts/test-workflows.mjs` | 23 | 确认门、状态机、SHA/配置竞态、`publish_unknown`、持久化与崩溃恢复、宿主 `create/prompt` 契约（含 signal 必填断言） |
-| `scripts/test-client.mjs` | 38 | SPA 渲染与状态机：三态失败、coverage/detailErrors、路由守卫、工作流交互、设置保存 |
-| `scripts/test-host.mjs` | 84 断言 | 真实 node:http + fake cordis ctx 的端到端 op 验证（含 CSP、401/403/405/415、脱敏、discover、inject 扁平数组契约） |
+| `scripts/test-data.mjs` | 21 | gh 字段契约、映射、CI 聚合、分页解析、配置脱敏、REST 回退与保留旧数据 |
+| `scripts/test-api.mjs` | 4 | 配置归一化、provider 调度与缓存、filterMrs、鉴权围栏、Origin/415、保存不阻塞、mrs 错误与 coverage |
+| `scripts/test-workflows.mjs` | 23 | 确认门、状态机、SHA/配置竞态、`publish_unknown`、持久化与崩溃恢复、宿主 `create/prompt` 契约（含 signal 必填断言）；4 种终止原因展开为 4 个用例 |
+| `scripts/test-client.mjs` | 51 | SPA 渲染与状态机：三态失败、coverage/detailErrors、路由守卫、工作流交互、设置保存；列表/视图用表驱动展开 |
+| `scripts/test-host.mjs` | 91 断言 | 真实 node:http + fake cordis ctx 的端到端 op 验证（含 CSP、401/403/405/415、256KB body 上限、脱敏、discover、inject 扁平数组契约） |
 
 测试使用可控 fixture，**不发布真实评论、不调用收费模型**；gh 字段检查用本地无效字段请求验证，不依赖真实登录。`npm run dev` 监听 `127.0.0.1:4173`（`PORT` 可改），使用独立临时配置并在退出时清理，不读取或修改真实 DSH 配置。
 

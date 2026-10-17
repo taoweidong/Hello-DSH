@@ -15,11 +15,28 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
       - name: Install dev dependencies
-        run: npm install
+        run: npm ci
+      - name: Verify tag matches package version
+        run: node scripts/check-version.mjs "$GITHUB_REF_NAME"
       - name: Lint
         run: npm run lint
       - name: Test
         run: npm test
+      - name: Verify packed contents
+        env:
+          PACK_JSON: ${{ runner.temp }}/pack.json
+        run: |
+          npm pack --dry-run --json > "$PACK_JSON"
+          node -e '
+          const fs = require("node:fs");
+          const [pack] = JSON.parse(fs.readFileSync(process.env.PACK_JSON, "utf8"));
+          const files = new Set(pack.files.map((file) => file.path));
+          const required = ["index.js", "workflows.js", "client.js", "web/index.html", "cordis.patch.yml", "icon.svg", "README.md", "LICENSE", "package.json"];
+          const missing = required.filter((file) => !files.has(file));
+          if (missing.length) throw new Error("missing from npm tarball: " + missing.join(", "));
+          if (pack.entryCount !== 9) throw new Error("expected 9 packed files, got " + pack.entryCount);
+          console.log("pack ok: " + pack.entryCount + " files, " + pack.size + " bytes packed, " + pack.unpackedSize + " bytes unpacked");
+          '
       - name: Publish
         run: npm publish
         env:

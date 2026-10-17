@@ -3,7 +3,7 @@
 // Creates a fake cordis ctx with a real node:http server, imports apply(),
 // and probes every API endpoint. Exits non-zero on any failure.
 
-import { createServer } from 'node:http'
+import { createServer, request } from 'node:http'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -83,7 +83,7 @@ async function main() {
   console.log('\n📡 Testing /codehub/api endpoints...')
   const boot = await get('/codehub/api?op=boot')
   assert('boot ok', boot.data.ok === true)
-  assert('boot version', boot.data.version === '0.1.0')
+  assert('boot version', boot.data.version === '0.1.1')
   assert('boot has config', !!boot.data.config)
   assert('boot config masked', !boot.data.config.instances?.some?.((i) => i.token && !i.token.startsWith('****')))
 
@@ -262,11 +262,49 @@ async function main() {
     assert('config readable on disk', false, e.message)
   }
 
+  // --- HTTP write fences: content-type, cross-site, oversized body ---
+  const nonJson = await fetch(`${base}/codehub/api?op=config.set`, {
+    method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}',
+  })
+  await nonJson.text()
+  assert('write rejects non-JSON content-type with 415', nonJson.status === 415, `got ${nonJson.status}`)
+
+  const crossSite = await new Promise((resolve, reject) => {
+    const req = request(`${base}/codehub/api?op=config.set`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
+    }, (res) => { res.resume(); resolve(res.statusCode) })
+    req.on('error', reject)
+    req.end('{}')
+  })
+  assert('write rejects sec-fetch-site cross-site with 403', crossSite === 403, `got ${crossSite}`)
+
+  const oversized = await new Promise((resolve) => {
+    let settled = false
+    const done = (value) => { if (!settled) { settled = true; resolve(value) } }
+    const req = request(`${base}/codehub/api?op=config.set`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+    }, (res) => { res.resume(); done({ status: res.statusCode }) })
+    req.on('error', (error) => done({ error: error.code || error.message }))
+    req.end('x'.repeat(300 * 1024))
+  })
+  assert(
+    'oversized body rejected',
+    oversized.status === 500 || oversized.status === 413 || /ECONNRESET|EPIPE|body too large/i.test(String(oversized.error)),
+    JSON.stringify(oversized),
+  )
+  const afterOversize = await get('/codehub/api?op=boot')
+  assert('server survives an oversized body', afterOversize.data.ok === true, JSON.stringify(afterOversize.data))
+
   // --- index.html ---
   const htmlRes = await fetch(`${base}/codehub/index.html`)
   assert('index.html served', htmlRes.status === 200)
   const htmlBody = await htmlRes.text()
   assert('index.html contains CodeHub', htmlBody.includes('CodeHub'))
+  const csp = htmlRes.headers.get('content-security-policy') || ''
+  assert('index.html CSP keeps default-src self', csp.includes("default-src 'self'"), csp)
+  assert('index.html CSP pins frame-ancestors self', csp.includes("frame-ancestors 'self'"), csp)
+  assert('index.html sets x-content-type-options nosniff', htmlRes.headers.get('x-content-type-options') === 'nosniff', htmlRes.headers.get('x-content-type-options'))
 
   // --- SPA inline script parses (syntax guard for web/index.html) ---
   const scriptMatch = htmlBody.match(/<script>([\s\S]*)<\/script>/)
@@ -299,8 +337,11 @@ async function main() {
   const notFound = await get('/codehub/api?op=nonexistent')
   assert('unknown op returns error', notFound.data.ok === false)
 
-  // Cleanup
-  server.close()
+  // Cleanup. The oversized-body probe resets a socket, so make sure the
+  // connection teardown completes before exiting (otherwise Windows libuv can
+  // trip a UV_HANDLE_CLOSING assertion during process.exit).
+  server.closeAllConnections?.()
+  await new Promise((resolve) => server.close(resolve))
   for (const e of effects) try { await e.cleanup?.() } catch {}
   rmSync(tmpDir, { recursive: true, force: true })
 

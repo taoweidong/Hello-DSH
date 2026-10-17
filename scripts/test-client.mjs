@@ -139,7 +139,7 @@ function spa() {
   sandbox.fixtureOverview = ov;
   run(`state.boot={hasData:false,capabilities:{ai:true,develop:true},config:{provider:'gh',repos:[],instances:[],organizations:[],ai:{},me:{}}}; state.overview=fixtureOverview;`);
   const click = selector => documentEvents.get('click')({ target: { closest: value => value === selector ? {} : null }, preventDefault() {} });
-  return { sandbox, run, node, window, events, intervals, click };
+  return { sandbox, run, node, window, events, documentEvents, intervals, click };
 }
 
 test('initial boot requests overview even when hasData is false', async () => {
@@ -151,12 +151,12 @@ test('initial boot requests overview even when hasData is false', async () => {
 
 test('drawer ignores late MR success and error after another selection or close', async () => {
   const s = spa(), pending = new Map();
-  s.sandbox.answer = (op, p) => op === 'mr.diff' ? Promise.resolve({ diff: 'diff text', files: [], diffTruncated: true }) : new Promise((resolve, reject) => pending.set(p.number, { resolve, reject }));
+  s.sandbox.answer = (op, p) => new Promise((resolve, reject) => pending.set(p.number, { resolve, reject }));
   s.run('api=answer');
   const a = s.run(`openMr('repo',1)`), b = s.run(`openMr('repo',2)`);
-  pending.get(2).resolve({ mr: { number: 2, title: 'Second', body: '<unsafe>', state: 'open' }, repo: {} });
+  pending.get(2).resolve({ diff: 'diff text', files: [], diffTruncated: true, mr: { number: 2, title: 'Second', body: '<unsafe>', state: 'open' }, repo: {} });
   await b;
-  pending.get(1).resolve({ mr: { number: 1, title: 'First', state: 'open' }, repo: {} });
+  pending.get(1).resolve({ diff: '', files: [], mr: { number: 1, title: 'First', state: 'open' }, repo: {} });
   await a;
   assert.match(s.node('#drawerTitle').textContent || s.node('#drawerTitle').innerHTML, /Second/);
   assert.doesNotMatch(s.node('#drawerBody').innerHTML, /<unsafe>/);
@@ -166,6 +166,34 @@ test('drawer ignores late MR success and error after another selection or close'
   pending.get(3).reject(new Error('late failure'));
   await c;
   assert.equal(s.node('#drawerBody').innerHTML, before);
+});
+
+test('MR detail uses the single mr.diff response when it carries the MR', async () => {
+  const s = spa(), ops = [];
+  s.sandbox.answer = async op => { ops.push(op); return { diff: 'one request diff', files: ['a.js'], diffTruncated: false, mr: { number: 9, title: 'Single fetch', state: 'open', reviews: [], comments: [] }, repo: {} }; };
+  await s.run(`api=answer;openMr('repo',9)`);
+  assert.deepEqual(ops, ['mr.diff']);
+  assert.match(s.node('#drawerBody').innerHTML, /one request diff/);
+  assert.match(s.node('#drawerBody').innerHTML, /a\.js/);
+});
+
+test('MR detail falls back to the mr op when mr.diff has no MR payload', async () => {
+  const s = spa(), ops = [];
+  s.sandbox.answer = async (op) => { ops.push(op); return op === 'mr.diff' ? { error: 'diff denied' } : { mr: { number: 10, title: 'Fallback', state: 'open', reviews: [], comments: [] }, repo: {}, detailErrors: ['comments denied'] }; };
+  await s.run(`api=answer;openMr('repo',10)`);
+  assert.deepEqual(ops, ['mr.diff', 'mr']);
+  assert.match(s.node('#drawerTitle').textContent, /Fallback/);
+  assert.match(s.node('#drawerBody').innerHTML, /Diff 加载失败：diff denied/);
+});
+
+test('MR detail empty arrays are rendered as empty, not as missing fields', async () => {
+  const s = spa();
+  s.sandbox.answer = async () => ({ diff: '', files: [], mr: { number: 11, title: 'Empty', state: 'open', reviews: [], comments: [] }, repo: {} });
+  await s.run(`api=answer;openMr('repo',11)`);
+  const body = s.node('#drawerBody').innerHTML;
+  assert.match(body, /暂无评审记录/);
+  assert.match(body, /暂无检视意见/);
+  assert.doesNotMatch(body, /接口未返回/);
 });
 
 test('unknown thread resolution stays distinct from unresolved', () => {
@@ -367,13 +395,13 @@ for (const kind of ['mr', 'issue']) {
 }
 
 for (const view of ['overview', 'mrs', 'reviews', 'issues', 'repos', 'stats']) {
-  test(`leaving saved settings for ${view} reloads missing overview before any list`, async () => {
-    const s = spa(), overview = deferred(), ops = [];
+  test(`leaving saved settings for ${view} keeps the saved overview and loads its list`, async () => {
+    const s = spa(), ops = [];
     s.sandbox.fixtureOverview.repos = [{ key: 'enterprise:acme/app', path: 'acme/app', name: 'app', counts: { open: 1, merged: 0, closed: 0, needsReview: 0, unresolved: 0, failingCi: 0, mergedWeek: 0 } }];
     s.sandbox.post = async (_op, body) => ({ config: body, overview: null });
     s.sandbox.answer = async op => {
       ops.push(op);
-      if (op === 'overview') return overview.promise;
+      if (op === 'overview') return { overview: { ...s.sandbox.fixtureOverview, coverage: { note: 'fresh overview' } } };
       const list = listCases.find(c => c.op === op);
       assert.ok(list, `unexpected request ${op}`);
       return { [list.rows]: [list.item], total: 1 };
@@ -381,16 +409,12 @@ for (const view of ['overview', 'mrs', 'reviews', 'issues', 'repos', 'stats']) {
     await s.run(`api=answer;apiPost=post;state.view='settings';saveConfig()`);
     assert.equal(s.run('state.view'), 'settings');
     assert.equal(s.run('state.saving'), false);
-    assert.equal(s.run('state.overview'), null);
+    assert.equal(s.run('state.overview.summary.repos'), 1, 'config.set(overview:null) must not clear a healthy overview');
     assert.deepEqual(ops, [], 'save remains nonblocking and does not wait for background refresh');
     s.sandbox.location.hash = '#/' + view;
-    const routing = s.run('route()');
+    await s.run('route()');
     await flush();
-    assert.deepEqual(ops, ['overview'], 'overview must load before the active list');
-    overview.resolve({ overview: s.sandbox.fixtureOverview });
-    await routing;
-    await flush();
-    assert.deepEqual(ops, ['overview', ...(['mrs', 'reviews', 'issues'].includes(view) ? [view] : [])]);
+    assert.deepEqual(ops, ['mrs', 'reviews', 'issues'].includes(view) ? [view] : [], 'no overview request is needed; only the active list may reload');
     assert.equal(s.run('state.overview.repos[0].path'), 'acme/app');
     assert.doesNotMatch(s.node('#main').innerHTML, /还没有可显示的仓库数据|加载中/);
     if (['mrs', 'reviews', 'issues'].includes(view)) assert.match(s.node('#main').innerHTML, /retained/);
@@ -418,7 +442,7 @@ test('a late overview route cannot restart the active list or overwrite newer re
   assert.doesNotMatch(s.node('#main').innerHTML, /obsolete overview|加载中/);
 });
 
-test('saving settings invalidates an in-flight overview and does not lose later edits', async () => {
+test('saving settings supersedes an in-flight overview and keeps later edits', async () => {
   const s = spa(), old = deferred(), saving = deferred(), ops = [];
   s.sandbox.answer = op => { ops.push(op); return op === 'models' ? Promise.resolve({ providers: [] }) : old.promise; };
   s.sandbox.post = () => saving.promise;
@@ -426,12 +450,12 @@ test('saving settings invalidates an in-flight overview and does not lose later 
   s.run(`location.hash='#/settings';route();draft().me.name='before'`);
   const saved = s.run('saveConfig()');
   s.run(`draft().me.name='after'`);
-  saving.resolve({ config: { repos: [], instances: [], organizations: [], ai: {}, me: { name: 'before' } }, overview: null });
+  saving.resolve({ config: { repos: [], instances: [], organizations: [], ai: {}, me: { name: 'before' } }, overview: { ...s.sandbox.fixtureOverview, summary: { repos: 9, errors: 0 } } });
   await saved;
   old.resolve({ overview: s.sandbox.fixtureOverview });
   await routing;
   await flush();
-  assert.equal(s.run('state.overview'), null);
+  assert.equal(s.run('state.overview.summary.repos'), 9, 'config.set overview wins over the stale in-flight overview');
   assert.equal(s.run('draft().me.name'), 'after');
   assert.equal(s.run('state.view'), 'settings');
   assert.deepEqual(ops, ['overview', 'models']);
@@ -441,4 +465,140 @@ test('settings accurately describes GitHub gh and HTTP workflow support', () => 
   const content = spa().run('viewSettings()');
   assert.match(content, /工作流[^<]*GitHub[^<]*gh[^<]*HTTP/);
   assert.doesNotMatch(content, /工作流仅支持 GitHub gh 数据源/);
+});
+
+test('overview failure renders a retryable error instead of pretending there is no data', async () => {
+  const s = spa();
+  s.run(`state.overview=null;state.overviewError="";state.overviewLoaded=false`);
+  let reject;
+  s.sandbox.fetch = () => new Promise((_, no) => { reject = no; });
+  const loading = s.run('loadOverview()');
+  assert.match(s.run('viewOverview()'), /正在加载仓库数据/);
+  assert.doesNotMatch(s.run('viewOverview()'), /还没有可显示的仓库数据|加载中…/);
+  reject(Object.assign(new Error('boom'), { name: 'TimeoutError' }));
+  await loading;
+  const failed = s.run('viewOverview()');
+  assert.match(failed, /仓库数据加载失败/);
+  assert.match(failed, /请求超时/);
+  assert.match(failed, /id="retryOverview"/);
+  s.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, overview: s.sandbox.fixtureOverview }) });
+  await s.click('#retryOverview');
+  assert.equal(s.run('state.overviewError'), '');
+  assert.match(s.run('viewOverview()'), /我的工作收件箱/);
+});
+
+test('route stops at a failed overview and does not request the target list', async () => {
+  const s = spa(), ops = [];
+  s.run(`state.overview=null;state.overviewError="";state.overviewLoaded=false;location.hash='#/mrs'`);
+  s.sandbox.fetch = async (u) => {
+    const op = new URL(String(u)).searchParams.get('op');
+    ops.push(op);
+    return op === 'overview' ? { ok: false, status: 502, json: async () => ({ ok: false, error: 'overview <down>' }) } : { ok: true, json: async () => ({ ok: true, mrs: [], total: 0 }) };
+  };
+  s.run('route()');
+  await flush();
+  assert.deepEqual(ops, ['overview']);
+  assert.match(s.node('#main').innerHTML, /仓库数据加载失败/);
+  assert.match(s.node('#main').innerHTML, /overview &lt;down&gt;/);
+});
+
+test('list failure keeps the last successful rows and marks them stale', async () => {
+  const s = spa();
+  s.sandbox.answer = async () => ({ mrs: [{ repoKey: 'acme/app', number: 1, title: 'retained row', state: 'open' }], total: 1 });
+  await s.run(`api=answer;state.mrData=null;loadMrs()`);
+  s.sandbox.answer = async () => { throw new Error('later <failure>'); };
+  await s.run('api=answer;loadMrs()');
+  const content = s.run('viewMrs()');
+  assert.match(content, /retained row/);
+  assert.match(content, /刷新失败：later &lt;failure&gt;/);
+  assert.match(content, /已保留上次成功数据/);
+  assert.doesNotMatch(content, /<failure>|加载失败：later/);
+});
+
+test('MR list shows partial errors and discloses truncated totals', async () => {
+  const s = spa();
+  s.sandbox.answer = async () => ({ mrs: [{ repoKey: 'acme/app', number: 1, title: 'one', state: 'open' }], total: 500, errors: ['comments <denied>'], coverage: { note: 'sample <partial>' } });
+  await s.run(`api=answer;state.mrData=null;loadMrs()`);
+  const content = s.run('viewMrs()');
+  assert.match(content, /部分数据加载失败/);
+  assert.match(content, /comments &lt;denied&gt;/);
+  assert.match(content, /显示前 1 \/ 共 500 条/);
+  assert.match(content, /sample &lt;partial&gt;/);
+  assert.doesNotMatch(content, /<denied>|<partial>/);
+});
+
+test('CI filter is visible, serialized to the hash, and no longer silently persists', async () => {
+  const s = spa();
+  s.sandbox.fetch = async () => ({ ok: true, json: async () => ({ ok: true, mrs: [], total: 0 }) });
+  s.run(`state.mrFilters.ci='failure'`);
+  assert.equal(s.run('flatMrFilters().ci'), 'failure');
+  assert.match(s.run('viewMrs()'), /id="fCi"[\s\S]*value="failure" selected/);
+  s.documentEvents.get('change')({ target: { id: 'fCi', value: 'success' } });
+  assert.equal(s.run('state.mrFilters.ci'), 'success');
+  assert.match(s.sandbox.location.hash, /ci=success/);
+  await flush();
+  s.run(`state.mrFilters.ci=''`);
+  assert.doesNotMatch(s.run('viewMrs()'), /value="failure" selected/);
+});
+
+test('publish_unknown disables generate/preview/publish and demands GitHub verification', async () => {
+  const s = spa(), posts = [];
+  s.sandbox.answer = async () => ({ diff: 'd', files: [], mr: { number: 12, title: 'Unknown state', state: 'open' }, repo: {} });
+  s.sandbox.post = async (op, body) => { posts.push(op); return {}; };
+  await s.run(`api=answer;apiPost=post;openMr('repo',12)`);
+  s.run(`reviewWork.get('repo|12').draft={id:'draft-x',status:'publish_unknown',headSha:'abc'};renderReviewWorkspace(detail)`);
+  const body = s.node('#reviewWorkspace').innerHTML;
+  assert.match(body, /发布结果未知/);
+  assert.match(body, /不会自动重试/);
+  assert.match(body, /id="createReview" disabled/);
+  assert.match(body, /id="reloadDraft" disabled/);
+  assert.match(body, /id="previewReview" disabled/);
+  s.run(`reviewWork.get('repo|12').draft={id:'draft-x',status:'publishing'};renderReviewWorkspace(detail)`);
+  assert.match(s.node('#reviewWorkspace').innerHTML, /id="createReview" disabled/);
+  s.run(`reviewWork.get('repo|12').draft={id:'draft-x',status:'draft',needsVerification:true};renderReviewWorkspace(detail)`);
+  assert.match(s.node('#reviewWorkspace').innerHTML, /id="createReview" disabled/);
+  s.run(`reviewWork.get('repo|12').draft={id:'draft-x',status:'publish_unknown'};renderReviewWorkspace(detail)`);
+  await s.run('createReview()');
+  await s.run('publishReview()');
+  s.run('previewReview()');
+  assert.deepEqual(posts, []);
+});
+
+test('api converts an aborted/timed-out request into an explicit timeout error', async () => {
+  const s = spa();
+  s.sandbox.fetch = () => Promise.reject(Object.assign(new Error('aborted'), { name: 'TimeoutError' }));
+  await assert.rejects(s.run(`api('overview')`), /请求超时（20 秒）/);
+});
+
+test('MR diff truncation is disclosed in the detail notice', async () => {
+  const s = spa();
+  s.sandbox.answer = async () => ({ diff: 'partial', files: [], diffTruncated: true, mr: { number: 13, title: 'Truncated', state: 'open' }, repo: {} });
+  await s.run(`api=answer;openMr('repo',13)`);
+  assert.match(s.node('#drawerBody').innerHTML, /Diff 已截断/);
+});
+
+test('discover prompts for a workspace path when the iframe URL has no cwd', async () => {
+  const s = spa(), requests = [];
+  s.sandbox.window.prompt = () => 'E:/workspace';
+  s.sandbox.fetch = async (u) => {
+    requests.push(new URL(String(u)));
+    return { ok: true, json: async () => ({ ok: true, repos: [{ name: 'app', path: 'E:/workspace/app', remotePath: 'acme/app' }] }) };
+  };
+  const settings = s.run('viewSettings()');
+  assert.match(settings, /id="discoverBtn"/);
+  assert.doesNotMatch(settings, /id="discoverBtn"[^>]*disabled/);
+  await s.click('#discoverBtn');
+  assert.equal(requests[0].searchParams.get('op'), 'repos.discover');
+  assert.equal(requests[0].searchParams.get('ws'), 'E:/workspace');
+  assert.equal(s.run('state.discover.length'), 1);
+  assert.match(s.run('viewSettings()'), /acme\/app/);
+});
+
+test('masked tokens are labelled and focus-selectable, not presented as real values', () => {
+  const s = spa();
+  s.run(`state.boot.config.instances=[{id:'i1',name:'gh',host:'github.com',token:'****abcd'}]`);
+  const content = s.run('viewSettings()');
+  assert.match(content, /已保存的 token 以 \*\*\*\* 显示/);
+  assert.match(content, /value="\*\*\*\*abcd"/);
+  assert.match(content, /data-k="token"/);
 });

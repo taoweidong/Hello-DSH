@@ -1,8 +1,7 @@
 # dependencies
 node_modules/
 
-# npm
-package-lock.json
+# npm pack archives (package-lock.json is tracked for reproducible installs)
 *.tgz
 
 # delivery artifacts archive: keep the folder (README.md is tracked),
@@ -15,6 +14,9 @@ releases/*
 
 # local ACL recovery tooling backups (machine-local, not project content)
 .acl-recovery/
+acl-backup-*.json
+acl-backup-*.json.ps1
+acl-report-*.jsonl
 
 # build / test artifacts
 dist/

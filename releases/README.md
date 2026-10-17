@@ -18,7 +18,8 @@
 | 文件 | 大小 | 生成时间 | 对应提交 |
 |------|------|----------|----------|
 | dsh-codehub-dashboard-0.1.0.tgz | 63,874 B | 2026-10-16 14:11 | 布局优化版（设计 token 化重排版），已装入 web profile 实机验证 |
+| dsh-codehub-dashboard-0.1.1.tgz | 68,188 B | 2026-10-17 17:59 | Host 数据契约 + SPA 失败三态 + CI/publish 门禁 + 文档同步；9 文件 / 210.6 kB unpacked |
 
-> 归档包按**当时**的仓库布局打包，只作历史交付凭证。2026-10-17 仓库根扁平化 + README/文档更新后，包内 `README.md` 已与源码不一致：下次交付前必须在仓库根重新 `npm pack` 并核对 `npm pack --dry-run` 的 9 个文件清单，旧包不要直接复用。
+> 归档包按**当时**的仓库布局打包，只作历史交付凭证。0.1.0 包内 `README.md` 与当前源码不一致，不要直接复用；0.1.1 为当前最新交付版本。
 
 > 交付与离线安装操作详见 [docs/packaging-and-offline-install.md](../docs/packaging-and-offline-install.md)。

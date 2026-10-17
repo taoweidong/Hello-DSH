@@ -30,7 +30,7 @@ import { createWorkflows } from './workflows.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const webRoot = join(here, 'web')
-const PLUGIN_VERSION = '0.1.0'
+const PLUGIN_VERSION = '0.1.1'
 
 const MAX_EXEC_BUFFER = 16 * 1024 * 1024
 const EXEC_TIMEOUT_MS = 30_000
@@ -837,6 +837,18 @@ function decorate(mr, meLogin) {
   }
 }
 
+/**
+ * Coverage disclosure shared by `overview` and list responses (`mrs`), so a
+ * list that silently drops a failing repo still tells the SPA its sample is
+ * incomplete. Keeping it in one place prevents the two surfaces diverging.
+ */
+function buildCoverage(snapshots) {
+  return {
+    limited: snapshots.some(s => s.coverage?.limited || s.error || s.issueError || s.stale),
+    note: '统计基于已同步样本：gh 每仓库最多 200 条 PR / Issue，HTTP 为首批结果；CI 状态仅覆盖未合并的 PR，历史 PR 显示为未查询；意见按需加载，未获取的线程解决状态不计为未解决。不是完整历史统计。',
+  }
+}
+
 function buildOverview(snapshots, cfg) {
   const meLogin = (cfg.me?.login || '').trim()
   const now = Date.now(); const weekAgo = now - 7 * DAY_MS
@@ -906,6 +918,9 @@ function buildOverview(snapshots, cfg) {
     needsReview: allMrs.filter((m) => m.needsMyReview).length, drafts: repos.reduce((s, r) => s + r.counts.drafts, 0),
     unresolvedComments: allComments.filter((c) => c.resolved === false).length,
     unknownResolutionComments: allComments.filter(c => c.resolved == null).length,
+    // `unresolvedComments: 0` is only trustworthy when resolution was actually
+    // fetched. With no comments at all the zero is genuine, so report true.
+    resolutionAvailable: allComments.length === 0 || allComments.some(c => c.resolved === true || c.resolved === false),
     openIssues: repos.reduce((s, r) => s + r.counts.openIssues, 0),
     closedIssues: repos.reduce((s, r) => s + r.counts.closedIssues, 0),
     assignedIssues: snapshots.reduce((s, r) => s + (r.issues ?? []).filter(i => i.state === 'open' && !!meLogin && i.assignees.includes(meLogin)).length, 0),
@@ -915,10 +930,7 @@ function buildOverview(snapshots, cfg) {
     totalComments: allComments.length,
     me: meLogin ? { login: meLogin, name: cfg.me?.name || meLogin } : null,
   }
-  const coverage = {
-    limited: snapshots.some(s => s.coverage?.limited || s.error || s.issueError || s.stale),
-    note: '统计基于已同步样本：gh 每仓库最多 200 条 PR / Issue，HTTP 为首批结果；CI 状态仅覆盖未合并的 PR，历史 PR 显示为未查询；意见按需加载，未获取的线程解决状态不计为未解决。不是完整历史统计。',
-  }
+  const coverage = buildCoverage(snapshots)
   return { summary, repos, statusDist, activity, topReviewers, coverage, recent: events.slice(0, 24), generatedAt: new Date().toISOString() }
 }
 
@@ -1168,7 +1180,10 @@ export function apply(ctx, loaderConfig = {}) {
             const snaps = await snapshots(); const meLogin = (cfg.me?.login || '').trim(); const all = []
             for (const snap of snaps) for (const mr of snap.mrs ?? []) all.push({ ...decorate(mr, meLogin), repoKey: snap.repoKey, repoPath: snap.repo?.path, repoName: snap.repo?.name })
             const filtered = filterMrs(all, { repoKey: q.get('repoKey') || '', state: q.get('state') || 'all', q: q.get('q') || '', needsReview: q.get('needsReview') === '1', unresolved: q.get('unresolved') === '1', author: q.get('author') || '', sort: q.get('sort') || 'updated', limit: q.get('limit') || 200, ci: q.get('ci') || '' })
-            sendJson({ ok: true, ...filtered }); return
+            // A failing repo contributes zero rows but is not "no work": report
+            // it and mark the sample as limited instead of showing a clean board.
+            const errors = snaps.filter(s => s.error || s.issueError).map(s => ({ repoKey: s.repoKey, error: s.error || s.issueError }))
+            sendJson({ ok: true, ...filtered, errors, coverage: buildCoverage(snaps) }); return
           }
           if (op === 'mr' || op === 'mr.diff') {
             const detail = await getPullRequest(q.get('repoKey') || '', Number(q.get('number')), { diff: op === 'mr.diff' })

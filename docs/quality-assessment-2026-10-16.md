@@ -4,7 +4,7 @@
 > 方式：全量复跑 lint/test + git 考古（`git log -S` 追溯契约变更）+ 三处契约交叉核对（`package.json` / `client.js` / `docs/design.md`）。
 > 结论先行：**整体质量高，但 HEAD 处于测试全红状态；两处失败均为「无信息提交引入的单边契约漂移」，本轮已修复并复验全绿。**
 >
-> 归档说明：文中的用例数（77/77）、体积（62.8 kB）与目录路径是**当日 HEAD 的快照**，不随后续改动回填。当前状态：仓库根已扁平化为插件包根、`npm test` 为 84 用例 + 84 断言、`npm pack --dry-run` 为 9 文件 65.4 kB，见 [design.md](design.md) §2.1/§10 与 [packaging-and-offline-install.md](packaging-and-offline-install.md) §1。
+> 归档说明：文中的用例数（77/77）、体积（62.8 kB）与目录路径是**当日 HEAD 的快照**，不随后续改动回填。截至当日：仓库根已扁平化为插件包根、`npm test` 为 84 用例 + 84 断言、`npm pack --dry-run` 为 9 文件 65.4 kB，见 [design.md](design.md) §2.1/§10 与 [packaging-and-offline-install.md](packaging-and-offline-install.md) §1。（2026-10-17 后续：测试已增至 99 用例 + 91 断言、版本 0.1.1；最新状态见文末「五、2026-10-17 后续更新」。）
 
 ## 一、评估矩阵
 
@@ -67,3 +67,13 @@
 **「无信息提交」是回归的放大器。** 本次两个失败的引入提交 `6b5edb4`，message 只有一个 "update"——如果它有写「inject 全名化 + 打包文档重写」，审查者第一件事就是问「client.js 为什么没同步」。提交信息不是形式，是后来人的现场证据。
 
 **契约类字段的修改必须做交叉核对。** `dsh.client.inject` 同时存在于 package.json（清单）、client.js（运行时）、design.md（文档）、test-host.mjs（断言）四处，改一处不跑测试 = 三处静默不一致。这类「一份事实、四处引用」的字段，测试断言已经在守门，缺的只是提交前那一次 `npm test`。
+
+## 五、2026-10-17 后续更新
+
+> 本节是后续进展，不修改上文 2026-10-16 的当日结论与数字。
+
+- 测试：`node --test` 四件套 **99 用例 / 99 pass / 0 fail**；`test-host.mjs` **91 断言 / 91 passed / 0 failed**；合计 **190** 项检查；`npm run lint` exit 0。
+- 版本：**0.1.1**（`package.json`、`index.js` 的 `PLUGIN_VERSION`、`package-lock.json` 同步）。
+- 工程化：CI 改用 `npm ci`；publish workflow 增加 tag 与 `package.json` 版本一致性、`npm pack` 9 文件白名单门禁；`package-lock.json` 已从 `.gitignore` 移除，提交时需随改动入库，否则 `npm ci` 在 CI 会因无 lock 失败。
+- 文档：`design.md`、`api-reference.md`、`README.md`、`packaging-and-offline-install.md` 已按 0.1.1 与 99/91 同步；0.1.1 tarball 字节数待生成后补（packaging §1.1 已标 TODO）。
+- 未闭合：真实宿主启动日志验收仍只能人工执行（`test-host.mjs` 的 fake ctx 直接 `apply()`，证明不了 cordis 服务解析），与 AGENTS.md「绿灯之外」一致。

@@ -279,7 +279,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
     <div class="spacer"></div>
     <span class="srcbadge" id="srcbadge"></span>
     <span class="updated" id="updated"></span>
-    <button class="btn" id="refreshBtn" title="立即刷新数据">
+    <button class="btn" id="refreshBtn" title="立即刷新数据" aria-label="立即刷新数据">
       <svg id="refreshIco" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 1 1 .908-.418A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
       刷新
     </button>
@@ -288,7 +288,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
   <div class="main" id="main"></div>
 </div>
 <div class="backdrop" id="backdrop"></div>
-<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" inert><div class="dhd"><span class="t" id="drawerTitle"></span><button class="dclose" id="drawerClose" title="关闭">✕</button></div><div class="dbd" id="drawerBody"></div></div>
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" inert><div class="dhd"><span class="t" id="drawerTitle"></span><button class="dclose" id="drawerClose" title="关闭" aria-label="关闭详情">✕</button></div><div class="dbd" id="drawerBody"></div></div>
 <div class="toast" id="toast" role="status"></div>
 
 <script>
@@ -310,11 +310,14 @@ function relTime(iso){ if(!iso) return "—"; const t=new Date(iso).getTime(); i
 const absTime = (iso) => iso ? new Date(iso).toLocaleString("zh-CN",{hour12:false}) : "";
 const fmtNum = (n) => Number(n||0).toLocaleString("zh-CN");
 
+function timeoutSignal(){ try{ return typeof AbortSignal!=="undefined"&&AbortSignal.timeout?AbortSignal.timeout(20000):undefined; }catch{ return undefined; } }
+function timeoutError(e){ return e&&(e.name==="TimeoutError"||e.name==="AbortError")?new Error("请求超时（20 秒），请检查网络后重试"):e; }
 async function api(op, params){ const u=new URL("/codehub/api", location.origin); u.searchParams.set("op",op);
   for(const [k,v] of Object.entries(params||{})) if(v!==undefined&&v!==null&&v!=="") u.searchParams.set(k,String(v));
-  const r=await fetch(u,{headers:{accept:"application/json"}}); const j=await r.json().catch(()=>({ok:false,error:"bad response"}));
+  let r; try{ r=await fetch(u,{headers:{accept:"application/json"},signal:timeoutSignal()}); }catch(e){ throw timeoutError(e); }
+  const j=await r.json().catch(()=>({ok:false,error:"bad response"}));
   if(!r.ok||!j.ok) throw new Error(j.error||("HTTP "+r.status)); return j; }
-async function apiPost(op, body){ const r=await fetch("/codehub/api?op="+encodeURIComponent(op),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body||{})});
+async function apiPost(op, body){ let r; try{ r=await fetch("/codehub/api?op="+encodeURIComponent(op),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body||{}),signal:timeoutSignal()}); }catch(e){ throw timeoutError(e); }
   const j=await r.json().catch(()=>({ok:false,error:"bad response"})); if(!r.ok||!j.ok) throw new Error(j.error||("HTTP "+r.status)); return j; }
 
 function toast(msg, ms){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"), ms||2600); }
@@ -374,6 +377,7 @@ const params = new URLSearchParams(location.search);
 const CWD = params.get("cwd") || "";
 const state = {
   boot: null, overview: null, view: "overview", busy: false,
+  overviewError: "", overviewLoaded: false,
   mrFilters: { repoKey:"", state:"all", q:"", needsReview:false, unresolved:false, ci:"", sort:"updated" },
   mrData: null,
   rvFilters: { repoKey:"", unresolved:false, needsReply:false, q:"" },
@@ -401,7 +405,7 @@ function route(){ const nav=++routeSeq; const {view,p}=currentHash(); state.view
   // Every overview-backed view needs the repo list before its own request, and a
   // superseded route must not fire a list for the page the user already left.
   else withBusy(async()=>{
-    if(!state.overview) await loadOverview(false);
+    if(!state.overview){ const ok=await loadOverview(false); if(nav!==routeSeq)return; if(!ok&&!state.overview){render();return;} }
     if(nav!==routeSeq) return;
     await loadActiveList();
     if(nav===routeSeq) render();
@@ -412,19 +416,23 @@ function route(){ const nav=++routeSeq; const {view,p}=currentHash(); state.view
 async function boot(){ try{ state.boot=await api("boot"); await loadOverview(false); }
   catch(e){ toast("加载失败: "+e.message,4000); } route(); startAutoRefresh(); }
 let overviewSeq=0, mrSeq=0, rvSeq=0, issueSeq=0;
-async function loadOverview(force){ const seq=++overviewSeq; const j=force?await api("refresh"):await api("overview"); if(seq!==overviewSeq)return; state.overview=j.overview; if(state.boot)state.boot.hasData=!!j.overview; }
+async function loadOverview(force){ const seq=++overviewSeq;
+  try{ const j=force?await api("refresh"):await api("overview"); if(seq!==overviewSeq)return false;
+    state.overview=j.overview; state.overviewLoaded=true; state.overviewError="";
+    if(state.boot)state.boot.hasData=!!j.overview; return true;
+  }catch(e){ if(seq===overviewSeq){ state.overviewError=e.message; state.overviewLoaded=true; } return false; } }
 function invalidateLists(){ ++mrSeq;++rvSeq;++issueSeq;state.mrData=null;state.rvData=null;state.issueData=null;state.mrError="";state.rvError="";state.issueError=""; }
-async function loadMrs(){ const f={...state.mrFilters},seq=++mrSeq;state.mrData=null;state.mrError="";
+async function loadMrs(){ const f={...state.mrFilters},seq=++mrSeq;state.mrError="";
   try{ const j=await api("mrs",{...f,needsReview:f.needsReview?"1":"",unresolved:f.unresolved?"1":"",limit:200});if(seq===mrSeq)state.mrData=j; }
   catch(e){if(seq===mrSeq)state.mrError=e.message;} }
-async function loadReviews(){ const f={...state.rvFilters},seq=++rvSeq;state.rvData=null;state.rvError="";
+async function loadReviews(){ const f={...state.rvFilters},seq=++rvSeq;state.rvError="";
   try{const j=await api("reviews",{...f,unresolved:f.unresolved?"1":"",needsReply:f.needsReply?"1":"",limit:300});if(seq===rvSeq)state.rvData=j;}
   catch(e){if(seq===rvSeq)state.rvError=e.message;} }
-async function loadIssues(){const f={...state.issueFilters},seq=++issueSeq;state.issueData=null;state.issueError="";
+async function loadIssues(){const f={...state.issueFilters},seq=++issueSeq;state.issueError="";
   try{const j=await api("issues",f);if(seq===issueSeq)state.issueData=j;}
   catch(e){if(seq===issueSeq)state.issueError=e.message;} }
 async function loadActiveList(){if(state.view==="mrs")await loadMrs();else if(state.view==="reviews")await loadReviews();else if(state.view==="issues")await loadIssues();}
-async function refreshData(force){invalidateLists();render();await loadOverview(force);await loadActiveList();render();}
+async function refreshData(force){render();const ok=await loadOverview(force);if(ok||state.overview)await loadActiveList();render();return ok;}
 let autoTimer;
 function startAutoRefresh(){clearInterval(autoTimer);autoTimer=setInterval(async()=>{
   if(document.visibilityState!=="visible"||state.busy||state.view==="settings")return;
@@ -495,10 +503,16 @@ function partialErrors(errors,guidance="请刷新重试，并在 GitHub 核对�
   return `<div class="notice warn" role="alert">部分数据加载失败，当前结果不完整。${esc(guidance)}<ul>${[...new Set(messages)].map(message=>`<li>${esc(message)}</li>`).join("")}</ul></div>`;
 }
 function listFailure(error){return `<div class="empty" role="alert">加载失败：${esc(error)}；请刷新重试。</div>`;}
+function retryOverviewButton(){return `<button class="btn sm primary" id="retryOverview">重试</button>`;}
+function overviewErrorState(){return `<div class="wrap"><div class="card"><div class="empty" role="alert"><div class="big">⚠️</div><b>仓库数据加载失败</b><p class="muted" style="max-width:460px;margin:var(--sp-2) auto">${esc(state.overviewError||"未知错误")}</p>${retryOverviewButton()}</div></div></div>`;}
+function overviewFailureNote(){return state.overviewError?`<div class="notice warn" role="alert">刷新失败：${esc(state.overviewError)}；当前显示上次成功数据。${retryOverviewButton()}</div>`:"";}
+function overviewPlaceholder(){return state.overviewError?overviewErrorState():state.overviewLoaded?emptyState():`<div class="wrap"><div class="card"><div class="empty">正在加载仓库数据…</div></div></div>`;}
+function staleNotice(error){return `<div class="notice warn" role="alert">刷新失败：${esc(error)}；已保留上次成功数据，可点「刷新」重试。</div>`;}
+function countLabel(rows,total){const n=Array.isArray(rows)?rows.length:0;const t=Number(total);return Number.isFinite(t)&&t>n?`显示前 ${fmtNum(n)} / 共 ${fmtNum(t)} 条`:`${fmtNum(Number.isFinite(t)?t:n)} 条`;}
 const DETAIL_RETRY_NOTE="部分信息未返回，当前详情不完整。请重新打开此详情重试，并在 GitHub 核对完整数据。";
 function detailErrors(...sources){ const merged=[...new Set(sources.flat().filter(Boolean))]; return merged.length?partialErrors(merged,DETAIL_RETRY_NOTE):""; }
-function viewOverview(){const ov=state.overview;if(!ov)return emptyState();const s=ov.summary;
-  return `<div class="wrap">${banner()}<div class="card" style="margin-bottom:var(--sp-4)"><div class="hd">我的工作收件箱</div><div class="bd">
+function viewOverview(){const ov=state.overview;if(!ov)return overviewPlaceholder();const s=ov.summary;
+  return `<div class="wrap">${overviewFailureNote()}${banner()}<div class="card" style="margin-bottom:var(--sp-4)"><div class="hd">我的工作收件箱</div><div class="bd">
     <p class="muted" style="margin:0 0 var(--sp-3)">先处理待评审、需回复与分配给我的 Issue；历史趋势请查看「统计」。</p>
     <div class="inline-actions"><a class="btn primary" href="#/mrs&needsReview=1">处理待评审 MR (${fmtNum(s.needsReview)})</a><a class="btn" href="#/reviews&needsReply=1">回复检视意见 (${fmtNum(s.needsReply)})</a>
     <a class="btn" href="#/issues&state=open${state.boot?.config?.me?.login?"&assignee="+encodeURIComponent(state.boot.config.me.login):""}">${state.boot?.config?.me?.login?"分配给我的 Issue":"开放 Issue（设置身份后筛选）"}</a></div>
@@ -508,10 +522,10 @@ function viewOverview(){const ov=state.overview;if(!ov)return emptyState();const
     ${kpi("","分配给我的 Issue",s.assignedIssues,"按已配置登录名统计","#/issues&state=open&assignee="+encodeURIComponent(state.boot?.config?.me?.login||""))}
     ${kpi(s.failingCi?"warn":"","CI 失败",s.failingCi,"开放 MR","#/mrs&state=open&ci=failure")}
   </div>${coverageNote()}<div class="card"><div class="hd">最近工作动态</div><div class="feed">${ov.recent.map(feedRow).join("")||'<div class="empty">暂无动态；可在设置添加仓库或组织。</div>'}</div></div></div>`;}
-function viewStats(){ const ov=state.overview; if(!ov) return emptyState();
+function viewStats(){ const ov=state.overview; if(!ov) return overviewPlaceholder();
   const s=ov.summary;
   return `<div class="wrap">
-  ${banner()}${coverageNote()}
+  ${overviewFailureNote()}${banner()}${coverageNote()}
   <div class="grid kpis">
     ${kpi("","开放 Issue",s.openIssues,"","#/issues&state=open")}
     ${kpi("soft","已关闭 Issue",s.closedIssues,"","#/issues&state=closed")}
@@ -548,28 +562,30 @@ function emptyState(){ return `<div class="wrap"><div class="card"><div class="e
 function banner(){ const ov=state.overview; if(!ov||state.bannerClosed) return "";
   const errN=ov.summary.errors;
   if(!errN) return "";
-  return `<div class="banner">⚠️ <b>&nbsp;${errN}&nbsp;</b> 个仓库拉取失败 — 请检查 gh CLI 登录状态（<code>gh auth status</code>）或 HTTP token 配置。<button class="x" id="bannerClose" title="关闭">✕</button></div>`; }
+  return `<div class="banner">⚠️ <b>&nbsp;${errN}&nbsp;</b> 个仓库拉取失败 — 请检查 gh CLI 登录状态（<code>gh auth status</code>）或 HTTP token 配置。<button class="x" id="bannerClose" title="关闭" aria-label="关闭提示">✕</button></div>`; }
 
-function viewMrs(){ const ov=state.overview; if(!ov) return emptyState();
+function viewMrs(){ const ov=state.overview; if(!ov) return overviewPlaceholder();
   const f=state.mrFilters; const data=state.mrData;
   const repoOpts=ov.repos.map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("");
   const rows=data?data.mrs:[];
-  const body=state.mrError?listFailure(state.mrError):!data?`<div class="empty">加载中…</div>`:rows.length?rows.map(mrRow).join(""):`<div class="empty">当前已返回数据中没有符合条件的 MR</div>`;
+  const body=!data?(state.mrError?listFailure(state.mrError):`<div class="empty">加载中…</div>`):rows.length?rows.map(mrRow).join(""):`<div class="empty">当前已返回数据中没有符合条件的 MR</div>`;
   return `<div class="wrap">
+  ${overviewFailureNote()}
   <div class="toolbar">
-    <select id="fRepo"><option value="">全部仓库</option>${repoOpts}</select>
-    <select id="fState">${[["all","全部状态"],["open","开放"],["merged","已合并"],["closed","已关闭"]].map(([v,l])=>`<option value="${v}"${f.state===v?" selected":""}>${l}</option>`).join("")}</select>
-    <input type="search" id="fQ" placeholder="搜索标题 / 作者 / 分支 / #号" value="${esc(f.q)}" />
+    <select id="fRepo" aria-label="MR 仓库"><option value="">全部仓库</option>${repoOpts}</select>
+    <select id="fState" aria-label="MR 状态">${[["all","全部状态"],["open","开放"],["merged","已合并"],["closed","已关闭"]].map(([v,l])=>`<option value="${v}"${f.state===v?" selected":""}>${l}</option>`).join("")}</select>
+    <input type="search" id="fQ" aria-label="搜索 MR" placeholder="搜索标题 / 作者 / 分支 / #号" value="${esc(f.q)}" />
     <label class="tgl${f.needsReview?" on":""}"><input type="checkbox" id="fNeeds"${f.needsReview?" checked":""}/>待我评审</label>
     <label class="tgl${f.unresolved?" on":""}"><input type="checkbox" id="fUnres"${f.unresolved?" checked":""}/>有未解决意见</label>
-    <select id="fSort">${[["updated","按更新排序"],["created","按创建排序"],["comments","按意见数排序"]].map(([v,l])=>`<option value="${v}"${f.sort===v?" selected":""}>${l}</option>`).join("")}</select>
+    <select id="fCi" aria-label="CI 状态">${[["","全部 CI"],["success","CI 成功"],["failure","CI 失败"],["pending","CI 进行中"],["none","无 CI"],["unknown","CI 未查询"]].map(([v,l])=>`<option value="${v}"${f.ci===v?" selected":""}>${l}</option>`).join("")}</select>
+    <select id="fSort" aria-label="MR 排序">${[["updated","按更新排序"],["created","按创建排序"],["comments","按意见数排序"]].map(([v,l])=>`<option value="${v}"${f.sort===v?" selected":""}>${l}</option>`).join("")}</select>
     <div class="spacer" style="flex:1"></div>
-    <span class="count-pill">${data?fmtNum(data.total):"—"} 条</span>
+    <span class="count-pill">${data?countLabel(data.mrs,data.total):"—"}</span>
   </div>
-  ${partialErrors(data?.errors)}${coverageNote(data?.coverage??ov.coverage)}
+  ${data&&state.mrError?staleNotice(state.mrError):""}${partialErrors(data?.errors)}${coverageNote(data?.coverage??ov.coverage)}
   <div class="card"><div class="mrlist" id="mrlist">${body}</div></div></div>`; }
 
-function mrRow(m){ return `<div class="mrrow" data-mr="${esc(m.repoKey)}|${m.number}">
+function mrRow(m){ return `<div class="mrrow" role="button" tabindex="0" data-mr="${esc(m.repoKey)}|${m.number}">
   <span class="no">#${m.number}</span>
   <div class="body">
     <div class="t1">${stateChip(m)}<span class="title">${esc(m.title)}</span>
@@ -585,17 +601,16 @@ function mrRow(m){ return `<div class="mrrow" data-mr="${esc(m.repoKey)}|${m.num
     <span class="adds">+${fmtNum(m.additions)}</span><span class="dels">-${fmtNum(m.deletions)}</span></div>
 </div>`; }
 
-function viewReviews(){ const ov=state.overview; if(!ov) return emptyState();
+function viewReviews(){ const ov=state.overview; if(!ov) return overviewPlaceholder();
   const f=state.rvFilters; const data=state.rvData;
   const repoOpts=ov.repos.map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("");
   let groups="";
-  if(state.rvError) groups=`<div class="card">${listFailure(state.rvError)}</div>`;
-  else if(!data) groups=`<div class="card"><div class="empty">加载中…</div></div>`;
+  if(!data) groups=state.rvError?`<div class="card">${listFailure(state.rvError)}</div>`:`<div class="card"><div class="empty">加载中…</div></div>`;
   else if(data.comments.length){
     const byMr=new Map();
     for(const c of data.comments){ const k=c.repoKey+"|"+c.mrNumber; if(!byMr.has(k)) byMr.set(k,{first:c,list:[]}); byMr.get(k).list.push(c); }
     for(const {first,list} of byMr.values()){
-      groups+=`<div class="card group"><div class="ghd" data-mr="${esc(first.repoKey)}|${first.mrNumber}">
+      groups+=`<div class="card group"><div class="ghd" role="button" tabindex="0" data-mr="${esc(first.repoKey)}|${first.mrNumber}">
         ${chip(first.mrState||"none",STATE_CH[first.mrState]||first.mrState||"—")}<span class="repo-tag">${esc(first.repoPath||first.repoName||first.repoKey)}</span>
         <span class="title">#${first.mrNumber} ${esc(first.mrTitle)}</span>
         <span class="count-pill">${list.length} 条意见</span>${list.some(x=>x.needsReply)?chip("reply","需我回复"):""}</div>
@@ -603,13 +618,14 @@ function viewReviews(){ const ov=state.overview; if(!ov) return emptyState();
     }
   } else groups=`<div class="card"><div class="empty">${f.unresolved||f.needsReply?"🎉 没有符合条件的检视意见":"暂无检视意见"}</div></div>`;
   return `<div class="wrap">
+  ${overviewFailureNote()}
   <div class="toolbar">
-    <select id="rRepo"><option value="">全部仓库</option>${repoOpts}</select>
+    <select id="rRepo" aria-label="检视意见仓库"><option value="">全部仓库</option>${repoOpts}</select>
     <label class="tgl${f.unresolved?" on":""}"><input type="checkbox" id="rUnres"${f.unresolved?" checked":""}/>未解决</label>
     <label class="tgl${f.needsReply?" on":""}"><input type="checkbox" id="rReply"${f.needsReply?" checked":""}/>需我回复</label>
-    <input type="search" id="rQ" placeholder="搜索内容 / 作者 / 文件" value="${esc(f.q)}" />
-    <div style="flex:1"></div><span class="count-pill">${data?fmtNum(data.total):"—"} 条</span>
-  </div>${partialErrors(data?.errors)}${coverageNote(data?.coverage??ov.coverage)}${groups}</div>`; }
+    <input type="search" id="rQ" aria-label="搜索检视意见" placeholder="搜索内容 / 作者 / 文件" value="${esc(f.q)}" />
+    <div style="flex:1"></div><span class="count-pill">${data?countLabel(data.comments,data.total):"—"}</span>
+  </div>${data&&state.rvError?staleNotice(state.rvError):""}${partialErrors(data?.errors)}${coverageNote(data?.coverage??ov.coverage)}${groups}</div>`; }
 
 function cmtRow(c){ return `<div class="cmt">${avatar(c.author)}<div class="body">
   <div class="meta"><b>${esc(c.author?.name||c.author?.login)}</b>
@@ -618,19 +634,20 @@ function cmtRow(c){ return `<div class="cmt">${avatar(c.author)}<div class="body
     ${resolutionChip(c)}${c.needsReply?chip("reply","需我回复"):""}</div>
   <div class="txt">${esc(c.body)}</div></div></div>`; }
 
-function viewIssues(){const f=state.issueFilters,data=state.issueData;
-  return `<div class="wrap"><div class="toolbar">
-    <select id="iRepo" aria-label="Issue 仓库"><option value="">全部仓库</option>${(state.overview?.repos||[]).map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("")}</select>
+function viewIssues(){const ov=state.overview;if(!ov)return overviewPlaceholder();const f=state.issueFilters,data=state.issueData;
+  const body=!data?(state.issueError?listFailure(state.issueError):'<div class="empty">加载中…</div>'):data.issues.length?data.issues.map(issueRow).join(""):'<div class="empty">没有符合条件的 Issue</div>';
+  return `<div class="wrap">${overviewFailureNote()}<div class="toolbar">
+    <select id="iRepo" aria-label="Issue 仓库"><option value="">全部仓库</option>${ov.repos.map(r=>`<option value="${esc(r.key)}"${f.repoKey===r.key?" selected":""}>${esc(r.path)}</option>`).join("")}</select>
     <select id="iState" aria-label="Issue 状态">${[["open","开放"],["closed","已关闭"],["all","全部状态"]].map(([v,l])=>`<option value="${v}"${f.state===v?" selected":""}>${l}</option>`).join("")}</select>
     <input type="search" id="iQ" aria-label="搜索 Issue" placeholder="搜索 Issue 标题 / 内容" value="${esc(f.q)}"/>
     <input type="text" id="iAssignee" aria-label="Issue 负责人" placeholder="负责人 GitHub 登录名" value="${esc(f.assignee)}"/>
-    <span class="count-pill">${data?fmtNum(data.total):"—"} 条</span></div>${partialErrors(data?.errors)}${coverageNote(data?.coverage??state.overview?.coverage)}
-    <div class="card mrlist">${state.issueError?listFailure(state.issueError):!data?'<div class="empty">加载中…</div>':data.issues.length?data.issues.map(issueRow).join(""):'<div class="empty">没有符合条件的 Issue</div>'}</div></div>`;}
+    <span class="count-pill">${data?countLabel(data.issues,data.total):"—"}</span></div>${data&&state.issueError?staleNotice(state.issueError):""}${partialErrors(data?.errors)}${coverageNote(data?.coverage??ov.coverage)}
+    <div class="card mrlist">${body}</div></div>`;}
 function issueRow(i){return `<div class="mrrow" role="button" tabindex="0" data-issue="${esc(i.repoKey)}|${esc(i.number)}"><span class="no">#${esc(i.number)}</span><div class="body"><div class="t1">${stateChip(i)}<span class="title">${esc(i.title)}</span>${(i.labels||[]).map(l=>chip("label",l)).join("")}</div><div class="t2"><span class="repo-tag">${esc(i.repoPath||i.repoKey)}</span>${avatar(i.author)}<span>${esc(i.author?.name||i.author?.login)}</span><span>负责人：${esc((i.assignees||[]).join(", ")||"未分配")}</span><span>${relTime(i.updatedAt)}</span></div></div></div>`;}
 
-function viewRepos(){ const ov=state.overview; if(!ov) return emptyState();
-  if(!ov.repos.length) return emptyState();
-  return `<div class="wrap"><div class="grid repogrid">${ov.repos.map(repoCard).join("")}</div></div>`; }
+function viewRepos(){ const ov=state.overview; if(!ov) return overviewPlaceholder();
+  if(!ov.repos.length) return `${overviewFailureNote()}${emptyState()}`;
+  return `<div class="wrap">${overviewFailureNote()}<div class="grid repogrid">${ov.repos.map(repoCard).join("")}</div></div>`; }
 
 function repoCard(r){ const c=r.counts; const tot=Math.max(1,c.open+c.merged+c.closed);
   return `<div class="card repo"><div class="bd">
@@ -677,6 +694,7 @@ function viewSettings(){ const cfg=draft(); if(!cfg) return `<div class="wrap"><
   </div></div>
 
   <div class="card sectcard"><div class="hd">CodeHub 实例（认证 token）<button class="btn sm" id="addInst">＋ 添加实例</button></div><div class="bd" id="instList">
+    <div class="hint" style="margin-bottom:var(--sp-2)">已保存的 token 以 **** 显示；更换时请全选覆盖（聚焦输入框会自动全选）。</div>
     ${cfg.instances.length?cfg.instances.map((inst,i)=>instRow(inst,i)).join(""):`<div class="muted" style="font-size:var(--fs-sm)">未配置实例。gh CLI 模式下无需配置（使用 gh auth login 的凭据）；HTTP API 模式需添加实例并填入 Personal Access Token。</div>`}
   </div></div>
 
@@ -684,7 +702,7 @@ function viewSettings(){ const cfg=draft(); if(!cfg) return `<div class="wrap"><
     <p class="muted">通过现有 gh 登录，同步组织内当前账号可访问的全部非归档仓库；同步不代表能访问组织的所有私有仓库。保存后后台排队刷新。</p>
     ${cfg.organizations.map((o,i)=>orgRow(o,i,cfg)).join("")||'<div class="muted">未配置组织，也可仅手动添加仓库。</div>'}
   </div></div>
-  <div class="card sectcard"><div class="hd">仓库 <span class="inline-actions"><button class="btn sm" id="discoverBtn" ${CWD?"":"disabled title=\"未获得工作区路径，请手动添加仓库并选择本地目录\""}>从工作区发现</button><button class="btn sm" id="addRepo">＋ 手动添加</button></span></div><div class="bd">
+  <div class="card sectcard"><div class="hd">仓库 <span class="inline-actions"><button class="btn sm" id="discoverBtn" aria-label="从本地工作区发现 Git 仓库">从工作区发现</button><button class="btn sm" id="addRepo">＋ 手动添加</button></span></div><div class="bd">
     <p class="muted">「本地开发」使用每个仓库的本地路径。组织同步仓库也可在此添加同名仓库以配置路径，然后保存。此操作不会克隆仓库。</p>
     <div id="repoList">${cfg.repos.length?cfg.repos.map((r,i)=>repoRow(r,i,cfg)).join(""):`<div class="muted" style="font-size:var(--fs-sm)">添加 GitHub 仓库（owner/name），选择已有的本地克隆目录以启用 Issue 开发。</div>`}</div>
     <div id="discoverBox">${state.discover?discoverBox():""}</div>
@@ -715,7 +733,7 @@ function viewSettings(){ const cfg=draft(); if(!cfg) return `<div class="wrap"><
 function instRow(inst,i){ return `<div class="listrow inst">
   <input type="text" data-inst="${i}" data-k="name" value="${esc(inst.name||"")}" placeholder="名称，如：我的 GitHub"/>
   <input type="text" data-inst="${i}" data-k="host" value="${esc(inst.host||"github.com")}" placeholder="github.com"/>
-  <input type="password" data-inst="${i}" data-k="token" value="${esc(inst.token||"")}" placeholder="Personal Access Token（HTTP API 模式需要）"/>
+  <input type="password" data-inst="${i}" data-k="token" value="${esc(inst.token||"")}" title="已保存 token 以 **** 显示；更换请全选覆盖" placeholder="Personal Access Token（已保存时以 **** 显示，更换请全选覆盖）"/>
   <button class="btn sm danger" data-delinst="${i}">删除</button></div>`; }
 
 function repoRow(r,i,cfg){ return `<div class="listrow repo">
@@ -735,10 +753,10 @@ function modelFields(cfg){const providers=state.models||[],models=providers.find
   return `${state.modelsError?`<div class="errbox">无法读取 DSH 模型：${esc(state.modelsError)}。请在 DSH 模型设置完成配置，再重新加载。</div>`:!providers.length?'<p class="muted">尚无可用模型；请先在 DSH 原生模型设置中配置。</p>':""}
     <div class="row2"><div class="fld"><label for="cfgAiProvider">模型提供方</label><select id="cfgAiProvider">${options(providers,cfg.ai.provider)}</select></div><div class="fld"><label for="cfgAiModel">评审模型</label><select id="cfgAiModel">${options(models,cfg.ai.model)}</select></div></div>`;}
 
-function discoverBox(){ const d=state.discover;
-  if(!d.length) return `<div class="muted" style="font-size:var(--fs-sm);margin-top:var(--sp-2)">工作区（${esc(CWD)}）下未发现 Git 仓库。</div>`;
+function discoverBox(){ const d=state.discover,ws=state.discoverWs||CWD;
+  if(!d.length) return `<div class="muted" style="font-size:var(--fs-sm);margin-top:var(--sp-2)">工作区（${esc(ws||"未指定")}）下未发现 Git 仓库。</div>`;
   return `<div class="discover" style="margin-top:var(--sp-3);border-top:1px dashed var(--border);padding-top:var(--sp-2)">
-    <b style="font-size:var(--fs-sm)">发现 ${d.length} 个仓库：</b>
+    <b style="font-size:var(--fs-sm)">工作区 ${esc(ws||"（未指定）")} 发现 ${d.length} 个仓库：</b>
     ${d.map((r,i)=>`<div class="item"><input type="checkbox" data-disc="${i}" ${r.remotePath?"checked":""} style="accent-color:var(--accent)"/>
       <b>${esc(r.name)}</b><span class="p" title="${esc(r.path)}">${esc(r.path)}</span>
       <span class="muted mono" style="font-size:var(--fs-xs)">${esc(r.remotePath||r.remote||"无远端")}</span></div>`).join("")}
@@ -757,8 +775,13 @@ function beginDetail(kind,repoKey,number){
   $("#drawerBody").innerHTML='<div class="empty">正在获取最新详情…</div>';$("#drawerClose").focus();return d;
 }
 async function openMr(repoKey,number){const d=beginDetail("mr",repoKey,number);
-  try{const [j,diff]=await Promise.all([api("mr",{repoKey,number}),api("mr.diff",{repoKey,number}).catch(e=>({error:e.message}))]);
-    if(!currentDetail(d))return;d.mr=j.mr;d.repo=j.repo||j.mr.repo;d.source=j.source||j.mr.source;d.detailErrors=j.detailErrors;d.diff=diff;renderMrDetail(d);
+  let diff; try{ diff=await api("mr.diff",{repoKey,number}); }catch(e){ diff={error:e.message}; }
+  if(!currentDetail(d))return;
+  try{
+    if(!diff.error&&diff.mr){ d.mr=diff.mr;d.repo=diff.repo||diff.mr.repo;d.source=diff.source||diff.mr.source;d.detailErrors=diff.detailErrors;d.diff=diff;renderMrDetail(d);return; }
+    const j=await api("mr",{repoKey,number});
+    if(!currentDetail(d))return;
+    d.mr=j.mr;d.repo=j.repo||j.mr.repo;d.source=j.source||j.mr.source;d.detailErrors=j.detailErrors;d.diff=diff;renderMrDetail(d);
   }catch(e){if(currentDetail(d))$("#drawerBody").innerHTML=`<div class="empty">加载失败：${esc(e.message)}。关闭后重新打开以重试。</div>`;}
 }
 function externalLink(url){return safeUrl(url)?`<a class="btn sm" href="${esc(safeUrl(url))}" target="_blank" rel="noopener noreferrer">在 GitHub 打开</a>`:"";}
@@ -772,35 +795,38 @@ function renderMrDetail(d){const m=d.mr,diff=d.diff;
     <div class="notice warn">${diff.diffTruncated?"Diff 已截断，只显示部分变更；AI 草稿也可能基于不完整的 diff。":"Diff 仅反映接口返回的文本，二进制内容及未返回内容不在此视图中。"} 请在原仓库核对完整变更，模型建议不能代替人工检视。</div>
     <div class="review-grid"><div><label for="mrDiff">源 Diff（只读）</label>
     ${diff.error?`<div class="errbox">Diff 加载失败：${esc(diff.error)}</div>`:`<textarea id="mrDiff" class="editor diff" readonly spellcheck="false">${esc(diff.diff||"没有可显示的文本 diff")}</textarea>`}
-    <details><summary>变更文件（${(diff.files||[]).length}）</summary><div class="prose">${(diff.files||[]).map(f=>esc(typeof f==="string"?f:f.path||f.filename||f.name||"未知文件")).join("\n")||"接口未返回文件列表"}</div></details></div><div id="reviewWorkspace"></div></div>
+    <details><summary>变更文件（${(diff.files||[]).length}）</summary><div class="prose">${(diff.files||[]).map(f=>esc(typeof f==="string"?f:f.path||f.filename||f.name||"未知文件")).join("\n")||"暂无变更文件"}</div></details></div><div id="reviewWorkspace"></div></div>
     <div class="sect">已发表评审（${(m.reviews||[]).length}）</div>
-    ${(m.reviews||[]).map(r=>`<div class="rv"><div class="meta">${avatar(r.author)}${esc(r.author?.name||r.author?.login)} ${chip(r.state,RD_CH[r.state]||r.state)} ${relTime(r.submittedAt)}</div><div class="txt">${esc(r.body)}</div></div>`).join("")||'<p class="muted">接口未返回评审记录。</p>'}
-    <div class="sect">检视意见（${(m.comments||[]).length}）</div><div class="notice">线程解决状态可能未知；仅明确返回 true / false 的意见计入已解决 / 未解决。此处不保证已加载完整历史线程。</div>
-    ${(m.comments||[]).map(cmtRow).join("")||'<p class="muted">接口未返回检视意见。</p>'}`;
+    ${(m.reviews||[]).map(r=>`<div class="rv"><div class="meta">${avatar(r.author)}${esc(r.author?.name||r.author?.login)} ${chip(r.state,RD_CH[r.state]||r.state)} ${relTime(r.submittedAt)}</div><div class="txt">${esc(r.body)}</div></div>`).join("")||'<p class="muted">暂无评审记录</p>'}
+    <div class="sect">检视意见（${(m.comments||[]).length}）</div><div class="notice">${state.overview?.summary?.resolutionAvailable===true?"评论线程解决状态来自接口返回。":"线程解决状态可能未知；仅明确返回 true / false 的意见计入已解决 / 未解决。"}此处不保证已加载完整历史线程。</div>
+    ${(m.comments||[]).map(cmtRow).join("")||'<p class="muted">暂无检视意见</p>'}`;
   renderReviewWorkspace(d);
 }
 function workFor(d){if(!reviewWork.has(d.key))reviewWork.set(d.key,{draft:null,body:"",preview:null,pending:"",error:""});return reviewWork.get(d.key);}
-function renderReviewWorkspace(d=detail){if(!d||d.kind!=="mr"||!currentDetail(d))return;const w=workFor(d),published=w.draft?.status==="published",canAI=state.boot?.capabilities?.ai===true;
+const DRAFT_ST={generating:"生成中",draft:"草稿",publishing:"发布中（状态可能已过期）",published:"已发布",publish_unknown:"发布状态未知",superseded:"已被新草稿取代",failed:"生成失败"};
+function draftNeedsVerify(draft){return !!draft&&(draft.needsVerification===true||draft.status==="publishing"||draft.status==="publish_unknown");}
+function renderReviewWorkspace(d=detail){if(!d||d.kind!=="mr"||!currentDetail(d))return;const w=workFor(d),published=w.draft?.status==="published",unknown=draftNeedsVerify(w.draft),canAI=state.boot?.capabilities?.ai===true;
   $("#reviewWorkspace").innerHTML=`<label for="reviewBody">评审正文（可编辑，不自动发布）</label>
     ${!canAI?'<div class="notice">DSH 评审能力不可用。请在设置选择已配置的 DSH 模型，并检查宿主能力。</div>':""}
-    <div class="inline-actions"><button class="btn" id="createReview" ${w.pending||published||!canAI?"disabled":""}>${w.pending==="create"?"生成中…":w.draft?"重新生成草稿":"生成 AI 评审草稿"}</button>${w.draft?`<button class="btn sm" id="reloadDraft" ${w.pending?"disabled":""}>检查草稿状态</button>`:""}</div>
-    ${w.draft?`<p class="muted">草稿 ${esc(w.draft.id)} · Head ${esc(w.draft.headSha||"未知")} · ${published?"已发布":esc(w.draft.status||"draft")}</p>`:""}
-    <textarea id="reviewBody" class="editor" placeholder="生成草稿后可在此删改，只发布你确认的正文。" ${w.pending||published?"disabled":""}>${esc(w.body)}</textarea>
+    ${unknown?'<div class="notice warn" role="alert">发布结果未知（或仍在进行）：可能已在 GitHub 生成评审，不会自动重试。请先到 GitHub 核对该 MR 是否已有评审，再用「检查草稿状态」确认；重试可能导致重复评审。</div>':""}
+    <div class="inline-actions"><button class="btn" id="createReview" ${w.pending||published||unknown||!canAI?"disabled":""}>${w.pending==="create"?"生成中…":w.draft?"重新生成草稿":"生成 AI 评审草稿"}</button>${w.draft?`<button class="btn sm" id="reloadDraft" ${w.pending||unknown?"disabled":""}>检查草稿状态</button>`:""}</div>
+    ${w.draft?`<p class="muted">草稿 ${esc(w.draft.id)} · Head ${esc(w.draft.headSha||"未知")} · ${DRAFT_ST[w.draft.status]||esc(w.draft.status||"draft")}</p>`:""}
+    <textarea id="reviewBody" class="editor" placeholder="生成草稿后可在此删改，只发布你确认的正文。" ${w.pending||published||unknown?"disabled":""}>${esc(w.body)}</textarea>
     ${w.error?`<div class="errbox" role="alert">${esc(w.error)}。草稿和编辑内容仍保留；不自动重试发布。</div>`:""}
-    <div class="inline-actions"><button class="btn primary" id="previewReview" ${!w.draft||w.pending||published?"disabled":""}>预览待发布正文</button></div>
+    <div class="inline-actions"><button class="btn primary" id="previewReview" ${!w.draft||w.pending||published||unknown?"disabled":""}>预览待发布正文</button></div>
     <div id="reviewPreview">${w.preview!==null?`<div class="notice">以下原文将作为一条评审发布；不会发布 diff、其它草稿或未选择的内容。</div><pre class="prose">${esc(w.preview)}</pre><button class="btn primary" id="publishReview" ${w.pending||published?"disabled":""}>${w.pending==="publish"?"发布中…":"确认发布此正文"}</button>`:""}</div>`;
 }
 async function createReview(){const d=detail;if(!d||d.kind!=="mr"||!d.mr)return;const w=workFor(d);
-  if(w.pending||w.draft?.status==="published"||state.boot?.capabilities?.ai!==true)return;
+  if(w.pending||w.draft?.status==="published"||draftNeedsVerify(w.draft)||state.boot?.capabilities?.ai!==true)return;
   if(!confirm("将此 MR 的 diff 发送给已配置的 DSH 模型以生成评审草稿。Diff 可能不完整；不会自动发布。"+(w.draft?"继续会替换当前草稿正文。":"")+"是否继续？"))return;
   w.pending="create";w.error="";w.preview=null;renderReviewWorkspace(d);
   try{const j=await apiPost("review.create",{repoKey:d.repoKey,number:d.number,confirmed:true});w.draft=j.draft;w.body=j.draft.body||"";}
   catch(e){w.error=e.message;}finally{w.pending="";renderReviewWorkspace(d);}
 }
-function previewReview(){const d=detail;if(!d||d.kind!=="mr")return;const w=workFor(d);if(w.pending||!w.draft||w.draft.status==="published")return;
+function previewReview(){const d=detail;if(!d||d.kind!=="mr")return;const w=workFor(d);if(w.pending||!w.draft||w.draft.status==="published"||draftNeedsVerify(w.draft))return;
   if(!w.body.trim()){toast("评审正文不能为空");return;}w.preview=w.body;renderReviewWorkspace(d);}
 async function publishReview(){const d=detail;if(!d||d.kind!=="mr")return;const w=workFor(d);
-  if(w.pending||!w.draft||w.draft.status==="published"||w.preview===null||w.preview!==w.body)return;
+  if(w.pending||!w.draft||w.draft.status==="published"||draftNeedsVerify(w.draft)||w.preview===null||w.preview!==w.body)return;
   const body=w.preview;if(!confirm("将预览中的这段正文发布到 GitHub MR #"+d.number+"？这是远程写入操作。"))return;
   w.pending="publish";w.error="";renderReviewWorkspace(d);
   try{const j=await apiPost("review.publish",{id:w.draft.id,body,confirmed:true});w.draft=j.draft;w.preview=null;toast("评审已发布");}
@@ -845,7 +871,7 @@ function render(){
   // not steal it from the input the user is typing in.
   const ae=document.activeElement;
   const focusInfo=(ae&&ae.id)?{id:ae.id,start:ae.selectionStart,end:ae.selectionEnd}:null;
-  $("#nav").innerHTML=VIEWS.map(([v,l])=>`<button data-nav="${v}" class="${state.view===v?"active":""}">${l}</button>`).join("");
+  $("#nav").innerHTML=VIEWS.map(([v,l])=>`<button data-nav="${v}" class="${state.view===v?"active":""}"${state.view===v?' aria-current="page"':""}>${l}</button>`).join("");
   const ov=state.overview; const s=ov?.summary;
   const sb=$("#srcbadge");
   sb.classList.remove("ok","bad");
@@ -885,7 +911,8 @@ document.addEventListener("click",async (e)=>{
   if(e.target.closest("#issueSettings")){const d=detail,c=draft(),repo=d.repo||{},path=repo.path||d.issue.repoPath,instance=repo.instanceId||"github.com";
     if(path&&!c.repos.some(r=>r.path===path&&(r.instance||"github.com")===instance))c.repos.push({id:"r"+Date.now(),instance,path,localPath:"",enabled:true});
     closeDrawer();nav("settings");return;}
-  if(e.target.closest("#refreshBtn")){if(state.busy)return;await withBusy(async()=>{await refreshData(true);toast("已读取最新返回的数据；统计范围请见覆盖说明");});return;}
+  if(e.target.closest("#refreshBtn")){if(state.busy)return;await withBusy(async()=>{const ok=await refreshData(true);toast(ok?"已读取最新返回的数据；统计范围请见覆盖说明":"刷新失败："+(state.overviewError||"请稍后重试")+(state.overview?"；已保留上次成功数据":""),ok?4500:6000);});return;}
+  if(e.target.closest("#retryOverview")){if(state.busy)return;await withBusy(async()=>{const ok=await refreshData(true);render();if(ok)toast("已加载仓库数据");else toast("加载失败："+(state.overviewError||"未知错误"),5000);});return;}
   if(e.target.closest("#reloadModels")){state.models=null;await loadModels();return;}
   if(e.target.closest("#addOrg")){const c=draft();c.organizations.push({id:"o"+Date.now(),instance:c.instances[0]?.id||"github.com",owner:"",enabled:true});render();return;}
   const orgDel=e.target.closest("[data-delorg]");if(orgDel){draft().organizations.splice(Number(orgDel.dataset.delorg),1);render();return;}
@@ -899,7 +926,8 @@ document.addEventListener("click",async (e)=>{
   if(e.target.closest("#testBtn")){ await withBusy(async()=>{ const j=await apiPost("config.test",{}); state.testResults=j.results; render(); }); return; }
   if(e.target.closest("#resetBtn")){ state.configDraft=null; render(); toast("已放弃未保存的修改"); return; }
   if(e.target.closest("#saveBtn")){ await saveConfig(); return; }
-  if(e.target.closest("#discoverBtn")){ await withBusy(async()=>{ const j=await api("repos.discover",{ws:CWD,depth:2}); state.discover=j.repos; render(); }); return; }
+  if(e.target.closest("#discoverBtn")){ let ws=CWD; if(!ws){ ws=window.prompt("请输入本地工作区路径（将从其子目录发现 Git 仓库）","")||""; if(!ws.trim()){toast("未输入工作区路径，已取消");return;} ws=ws.trim(); }
+    await withBusy(async()=>{ const j=await api("repos.discover",{ws,depth:2}); state.discoverWs=ws; state.discover=j.repos; render(); }); return; }
   if(e.target.closest("#discAdd")){ const c=draft(); const boxes=document.querySelectorAll("[data-disc]");
     boxes.forEach((b)=>{ if(!b.checked) return; const r=state.discover[Number(b.dataset.disc)];
       c.repos.push({id:"r"+Date.now()+Math.random().toString(16).slice(2,6),instance:c.instances[0]?.id||"github.com",path:r.remotePath||("local/"+r.name),localPath:r.path,enabled:true}); });
@@ -927,6 +955,7 @@ document.addEventListener("change",(e)=>{
   else if(t.id==="fSort"){ state.mrFilters.sort=t.value; refreshMrs(); }
   else if(t.id==="fNeeds"){ state.mrFilters.needsReview=t.checked; nav("mrs",flatMrFilters()); }
   else if(t.id==="fUnres"){ state.mrFilters.unresolved=t.checked; nav("mrs",flatMrFilters()); }
+  else if(t.id==="fCi"){ state.mrFilters.ci=t.value; nav("mrs",flatMrFilters()); }
   else if(t.id==="rRepo"){ state.rvFilters.repoKey=t.value; nav("reviews",flatRvFilters()); }
   else if(t.id==="rUnres"){ state.rvFilters.unresolved=t.checked; nav("reviews",flatRvFilters()); }
   else if(t.id==="rReply"){ state.rvFilters.needsReply=t.checked; nav("reviews",flatRvFilters()); }
@@ -943,6 +972,7 @@ document.addEventListener("input",(e)=>{ const t=e.target;if(updateConfigField(t
   if(t.id==="rQ"){state.rvFilters.q=t.value;debounce(()=>{if(state.view==="reviews")nav("reviews",flatRvFilters());},350);}
   if(t.id==="iQ"){state.issueFilters.q=t.value;debounce(()=>{if(state.view==="issues")nav("issues",state.issueFilters);},350);}
 });
+document.addEventListener("focusin",(e)=>{const t=e.target;if(t?.matches?.('input[data-k="token"]'))try{t.select();}catch{}});
 const flatMrFilters=()=>{const f=state.mrFilters;return {repoKey:f.repoKey,state:f.state==="all"?"":f.state,q:f.q,needsReview:f.needsReview?"1":"",unresolved:f.unresolved?"1":"",ci:f.ci};};
 const flatRvFilters=()=>{const f=state.rvFilters;return {repoKey:f.repoKey,unresolved:f.unresolved?"1":"",needsReply:f.needsReply?"1":"",q:f.q};};
 let _dbt=null; const debounce=(fn,ms)=>{clearTimeout(_dbt);_dbt=setTimeout(fn,ms);};
@@ -952,7 +982,10 @@ async function saveConfig(){const c=draft();if(!c||state.saving)return;const sna
     // Do not discard edits typed while the save request was in flight.
     const edited=JSON.stringify(state.configDraft)!==snapshot;
     if(!edited)state.configDraft=JSON.parse(JSON.stringify(j.config));
-    ++overviewSeq;state.overview=j.overview||null;invalidateLists();state.testResults=null;
+    // config.set returns overview:null; keep the last successful overview until
+    // the queued background refresh supplies fresh data.
+    if(j.overview){++overviewSeq;state.overview=j.overview;state.overviewError="";state.overviewLoaded=true;invalidateLists();}
+    state.testResults=null;
     toast("配置已保存，后台刷新已排队"+(edited?"；后续编辑尚未保存":""),4500);
   }catch(e){toast("保存失败："+e.message,4000);}finally{state.saving=false;render();}}
 
