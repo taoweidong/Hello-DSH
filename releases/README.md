@@ -4,14 +4,13 @@
 
 ## 规则
 
-- 打包产物统一归档到这里，**不放在插件源码目录或仓库根目录**——根目录只允许出现项目内容（README、AGENTS.md、源码目录）。
+- 打包产物统一归档到这里，**不放在仓库根或别处**——仓库根只保留项目内容（源码、docs、AGENTS.md）。
 - 目录内容不纳入 git 版本控制（见根 `.gitignore`），仅本 README 入库以保留目录结构。
-- 打包命令仍在插件目录执行（`npm pack` 按调用目录产出），完成后把产物移入本目录：
+- 打包命令在**仓库根**执行（`npm pack` 按调用目录产出），完成后把产物移入本目录：
 
   ```sh
-  cd dsh-codehub-dashboard
   npm pack
-  mv dsh-codehub-dashboard-*.tgz ../releases/
+  mv dsh-codehub-dashboard-*.tgz releases/
   ```
 
 ## 当前归档
@@ -20,4 +19,6 @@
 |------|------|----------|----------|
 | dsh-codehub-dashboard-0.1.0.tgz | 63,874 B | 2026-10-16 14:11 | 布局优化版（设计 token 化重排版），已装入 web profile 实机验证 |
 
-> 交付与离线安装操作详见 [dsh-codehub-dashboard/docs/packaging-and-offline-install.md](../dsh-codehub-dashboard/docs/packaging-and-offline-install.md)。
+> 归档包按**当时**的仓库布局打包，只作历史交付凭证。2026-10-17 仓库根扁平化 + README/文档更新后，包内 `README.md` 已与源码不一致：下次交付前必须在仓库根重新 `npm pack` 并核对 `npm pack --dry-run` 的 9 个文件清单，旧包不要直接复用。
+
+> 交付与离线安装操作详见 [docs/packaging-and-offline-install.md](../docs/packaging-and-offline-install.md)。

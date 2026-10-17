@@ -1,6 +1,6 @@
 # API Reference
 
-> dsh-codehub-dashboard v0.1.0 HTTP API 完整参考 | 最后更新：2026-10-15
+> dsh-codehub-dashboard v0.1.0 HTTP API 完整参考 | 最后更新：2026-10-17
 
 ## Base URL
 

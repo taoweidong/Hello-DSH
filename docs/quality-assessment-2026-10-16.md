@@ -3,6 +3,8 @@
 > 对象：`dsh-codehub-dashboard` v0.1.0（HEAD = 4582367）。
 > 方式：全量复跑 lint/test + git 考古（`git log -S` 追溯契约变更）+ 三处契约交叉核对（`package.json` / `client.js` / `docs/design.md`）。
 > 结论先行：**整体质量高，但 HEAD 处于测试全红状态；两处失败均为「无信息提交引入的单边契约漂移」，本轮已修复并复验全绿。**
+>
+> 归档说明：文中的用例数（77/77）、体积（62.8 kB）与目录路径是**当日 HEAD 的快照**，不随后续改动回填。当前状态：仓库根已扁平化为插件包根、`npm test` 为 84 用例 + 84 断言、`npm pack --dry-run` 为 9 文件 65.4 kB，见 [design.md](design.md) §2.1/§10 与 [packaging-and-offline-install.md](packaging-and-offline-install.md) §1。
 
 ## 一、评估矩阵
 

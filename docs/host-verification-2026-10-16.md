@@ -3,6 +3,8 @@
 > 环境：本机 DSH 0.2.0-rc.2（`D:\Program Files\deepseek\`，Electron 44 + cordis runtime）。
 > 对象：`releases/dsh-codehub-dashboard-0.1.0.tgz`（HEAD 代码重打包）。
 > 结论：**实机验证抓出一个 P0 级契约 bug——插件 host 半在真实宿主从未激活过**（此前全部绿灯是测试 mock 掩盖）。修复后双 profile 安装、全链路验证通过。
+>
+> 归档说明：本文按当日仓库布局记录（插件在 `dsh-codehub-dashboard/` 子目录）。2026-10-17 起仓库重命名为 `dsh-codehub-dashboard`、源码扁平化到仓库根；「必须看真实宿主启动日志」这条验收口径已写入根 [AGENTS.md](../AGENTS.md)。
 
 ## 一、实机暴露的 P0：inject 契约违反（主链路从未激活）
 

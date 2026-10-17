@@ -1,8 +1,10 @@
 # 打包与离线安装操作手册
 
-> dsh-codehub-dashboard v0.1.0 | 文档更新：2026-10-16
+> dsh-codehub-dashboard v0.1.0 | 文档更新：2026-10-17
 >
 > 本手册的命令与输出**均在本机（Windows + DSH 0.2.0-rc.2）实测**，实测产生的临时 profile 已删除。标注「未实测」的条目除外。
+>
+> **仓库布局（2026-10-17 起）**：仓库根就是插件包根，`npm pack`、`npm test` 一律在**仓库根**执行；早期文档里的 `cd dsh-codehub-dashboard`（子目录）已废弃。GitHub 仓库名与 npm 包名同为 `dsh-codehub-dashboard`。
 
 ## 0. 结论速查
 
@@ -23,14 +25,13 @@
 ### 1.1 用 npm pack（推荐）
 
 ```bash
-cd dsh-codehub-dashboard
-npm pack          # 产出 ./dsh-codehub-dashboard-0.1.0.tgz
-mv dsh-codehub-dashboard-*.tgz ../releases/   # 归档到仓库根 releases/，保持根目录整洁
+npm pack                                  # 在仓库根执行，产出 ./dsh-codehub-dashboard-0.1.0.tgz
+mv dsh-codehub-dashboard-*.tgz releases/  # 归档到仓库根 releases/，保持根目录整洁
 ```
 
 本机实测：`65,437` 字节，`npm pack --dry-run` 报 **9 个文件、package size 65.4 kB、unpacked size 207.4 kB**。归档根为 `package/`（npm 规范前缀）。
 
-> 打包产物统一归档到仓库根 [releases/](../../releases/) 目录（目录内有版本清单），不留在插件目录或仓库根。`releases/*.tgz` 已被 `.gitignore` 排除，交付时按需单独拷贝。
+> 打包产物统一归档到仓库根 [releases/](../releases/) 目录（目录内有版本清单），不留在仓库根或别处。`releases/*.tgz` 已被 `.gitignore` 排除，交付时按需单独拷贝。
 
 内容清单由 `package.json` 的 `files` 字段决定：
 
@@ -43,10 +44,10 @@ mv dsh-codehub-dashboard-*.tgz ../releases/   # 归档到仓库根 releases/，�
 | `package.json` | 1.6 KB | 插件清单（含 `dsh.bundle.patch` 声明） |
 | `cordis.patch.yml` | 509 B | DSH bundle patch |
 | `icon.svg` | 638 B | 插件图标 |
-| `README.md` | 8.8 KB | 使用文档 |
+| `README.md` | 9.0 KB | 使用文档 |
 | `LICENSE` | 1.1 KB | MIT 许可证 |
 
-> `docs/` 与 `scripts/` **不进产物**（未在 `files` 中声明）；需要交付文档请单独打包。
+> 仓库根的 `docs/`、`scripts/`、`releases/`、`.github/`、`AGENTS.md`、`eslint.config.js` **都不进产物**（未在 `files` 中声明）；需要交付文档请单独打包。
 > 运行时依赖为零，`eslint` 只在 `devDependencies`，不进入产物 —— 这是离线安装能成功的关键。
 
 ### 1.2 用 tar 直接打包目录（也可以）
@@ -54,11 +55,11 @@ mv dsh-codehub-dashboard-*.tgz ../releases/   # 归档到仓库根 releases/，�
 `dsh plugin` 的安装参数最终交给 pnpm，pnpm 接受任意 tarball。本机实测两种非 npm 布局**都能装上**：
 
 ```bash
-# 布局 A：单一顶层目录（实测通过）
-tar -czf codehub.tar.gz dsh-codehub-dashboard/
+# 布局 A：单一顶层目录（实测通过）——在仓库根的上一级执行，目录名即本地 clone 名
+cd E:/GitHub && tar -czf codehub.tar.gz dsh-codehub-dashboard/
 
-# 布局 B：文件平铺在归档根（实测通过）
-tar -czf codehub-flat.tar.gz -C dsh-codehub-dashboard .
+# 布局 B：文件平铺在归档根（实测通过）——-C 指向仓库根
+tar -czf codehub-flat.tar.gz -C E:/GitHub/dsh-codehub-dashboard .
 ```
 
 判据只有一条：解压后能找到 `package.json`。包名与版本取自其中，与归档名无关（把 tar 命名为 `x.tar.gz` 不会改变安装结果）。
@@ -68,9 +69,9 @@ tar -czf codehub-flat.tar.gz -C dsh-codehub-dashboard .
 ### 1.3 交付前校验
 
 ```bash
-npm pack --dry-run                     # 预览文件与体积
-tar -tzf dsh-codehub-dashboard-0.1.0.tgz | head    # 确认归档布局
-node -e "console.log(require('./package.json').dsh.bundle)"  # 确认 bundle 声明存在
+npm pack --dry-run                                  # 预览文件与体积（仓库根执行）
+tar -tzf releases/dsh-codehub-dashboard-0.1.0.tgz | head   # 确认归档布局
+node -e "console.log(require('./package.json').dsh.bundle)" # 确认 bundle 声明存在
 ```
 
 `dsh.bundle.patch` 必须存在。若缺失，安装会成功但 DSH 打印 `declares no dsh.bundle ... installed as a plain dependency, not a profile layer`，左侧导航不会出现入口。
@@ -203,10 +204,12 @@ printf -- '[]\n' > "$P/cordis.patch.yml"
 ### 3.4 开发者本机（link）
 
 ```bash
-dsh plugin --profile desktop add link:E:/GitHub/Hello-DSH/dsh-codehub-dashboard
+dsh plugin --profile desktop add link:E:/GitHub/dsh-codehub-dashboard
 ```
 
 装完后 `dependencies` 记录 `link:<绝对路径>`，`bundles` 同样自动追加。改 host half 要重启 DSH，改 client half / SPA 通常热加载即可。
+
+> link 的绝对路径写死在 profile 里：仓库重命名、本地 clone 改名或移动目录后，要用新路径重新 `add`，旧 link 会解析失败。
 
 ---
 
@@ -312,9 +315,10 @@ gh auth status                                  # 验证
 ## 8. 一次离线交付的最小动作
 
 ```bash
-# 打包机
-cd dsh-codehub-dashboard && npm pack                      # → *.tgz
-tar -tzf dsh-codehub-dashboard-0.1.0.tgz | head           # 抽查布局
+# 打包机（仓库根）
+npm pack                                  # → ./dsh-codehub-dashboard-0.1.0.tgz
+mv dsh-codehub-dashboard-*.tgz releases/
+tar -tzf releases/dsh-codehub-dashboard-0.1.0.tgz | head   # 抽查布局
 
 # 目标机（离线）
 cd D:/dsh-plugins
@@ -328,6 +332,8 @@ dsh --profile web --dump-config | grep -A2 dsh-codehub-dashboard   # 必须看�
 ## 9. 已知坑与未验证项
 
 - **`dsh` CLI 会在调用目录物化 runtime 投影**：本机在 git 仓库根目录发现过 `package.json`（`@deepseek-ai/dsh-desktop-runtime`）与 2.8 MB 的 `desktop-runtime.json`，内容与本仓库无关；已移到 `E:/tmp/dsh-cli-runtime-artifacts/` 保留。**触发条件未定位**（`-V`、`--dump-config` 在干净空目录实测都不生成）。稳妥做法：在仓库外的空目录执行 `dsh`，并在 `git add` 前看一次 `git status`。
+>
+> ⚠️ 扁平化之后仓库根**就是**插件 `package.json` 所在目录，这个坑的危害从「多出垃圾文件」升级为**覆盖插件清单**（被覆盖后 `dsh.bundle.patch` 声明消失，装出去的包不是 profile layer）。请在 `E:/tmp/dsh-cli/` 这类仓库外目录执行 `dsh`，执行后先看 `git status` 再决定是否 `git checkout -- package.json`。
 - 归档名不影响安装（包名取自内层 `package.json`），但**安装后 profile 里记的是绝对路径**，换机/换目录需重新 `add`。
 - `--offline` 在 `dsh plugin` 上实测有效；DSH Desktop **界面内**的插件管理流程本文未覆盖（未实测），界面装完同样可用 `--dump-config` 验证。
 - 在线 registry 安装（`add dsh-codehub-dashboard`）**未实测**：本插件包尚未发布到 npm。命令面与 registry spec 的预检逻辑已从宿主代码确认。

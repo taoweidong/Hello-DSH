@@ -3,6 +3,8 @@
 > 范围：`index.js`（host 半）、`web/index.html`（SPA）、`client.js`。审查方式：全文通读 + 数据流追踪 + 渲染路径推演。
 > 分级：P0 = 真 bug，必修；P1 = 高价值优化；P2 = 已知限制，记录不改。
 > 后续追加：「追加记录：原生契约复核（2026-10-15 第二轮）」、「追加记录：全量复验（2026-10-16）」、「追加记录：真实凭据全链路测试（2026-10-16 第三轮）」。
+>
+> 本文为当日现场记录，文中的行号、测试数与目录路径（含 `dsh-codehub-dashboard/` 子目录、`taoweidong/Hello-DSH`）按**当时**状态保留。2026-10-17 起仓库已重命名为 `dsh-codehub-dashboard` 且插件源码扁平化到仓库根，最新结构见 [design.md](design.md) 与根 [README.md](../README.md)。
 
 ## P0 真 bug（6 项）
 

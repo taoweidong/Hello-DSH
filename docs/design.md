@@ -1,8 +1,10 @@
 # dsh-codehub-dashboard 设计文档
 
-> 版本：0.1.0 | 最后更新：2026-10-15
+> 版本：0.1.0 | 最后更新：2026-10-17
 >
 > 本文描述**当前实现**。与早期草案的三处结构性差异：不再依赖 dsh-better-sidebar（改用 DSH 原生 `slots`/`layout`/`uiWorkspace`）；新增 `workflows.js`（原生模型检视 + Issue 开发会话 + 审计持久化）；HTTP 路由加入 DSH 原生 `connection` 信任校验。
+>
+> 仓库布局：GitHub 仓库与 npm 包同名 `dsh-codehub-dashboard`，**仓库根就是插件包根**（早期版本放在 `dsh-codehub-dashboard/` 子目录，2026-10-17 已扁平化）。
 
 ## 1. 项目概述
 
@@ -66,10 +68,10 @@
 
 | 模块 | 文件 | 行数 | 职责 |
 |------|------|------|------|
-| Host half | `index.js` | 1184 | 配置存储、gh/http/git provider、缓存与聚合、HTTP 路由与安全栅栏 |
-| Workflows | `workflows.js` | 488 | 原生模型检视草稿、COMMENT 发布、Issue 开发会话、审计持久化 |
+| Host half | `index.js` | 1250 | 配置存储、gh/http/git provider、缓存与聚合、HTTP 路由与安全栅栏 |
+| Workflows | `workflows.js` | 502 | 原生模型检视草稿、COMMENT 发布、Issue 开发会话、审计持久化 |
 | Client half | `client.js` | 90 | 原生左导航注册、iframe 容器、受限宿主桥接 |
-| Dashboard SPA | `web/index.html` | 938 | 7 个视图、详情抽屉、工作流交互、设置表单、内联 SVG 图表 |
+| Dashboard SPA | `web/index.html` | 962 | 7 个视图、详情抽屉、工作流交互、设置表单、内联 SVG 图表 |
 | Bundle patch | `cordis.patch.yml` | — | DSH loader 挂载声明 |
 | Tests / dev | `scripts/` | — | 数据/契约/工作流/SPA/集成测试与隔离开发服务 |
 
@@ -80,14 +82,13 @@
 ### 3.1 Host inject
 
 ```javascript
-export const name = 'codehub-dashboard'
-export const inject = {
-  required: ['webServer', 'connection'],
-  optional: ['llm', 'sessions', 'sessionController'],
-}
+export const name = 'dsh-codehub-dashboard'
+export const inject = ['webServer', 'connection']
 ```
 
-`connection` 为**必需**：路由在拿到它之前不处理任何请求。可选服务缺失时对应动作返回 503 并在 UI 中禁用，不会降级到自建实现。
+`connection` 为**必需**：路由在拿到它之前不处理任何请求。cordis 的 `Inject.resolve` 把**数组元素**当服务名，对象形态 `{required, optional}` 会被解析成两个叫 `required`/`optional` 的服务，插件在真实宿主永远 pending（2026-10-16 实机验证抓出的 P0，见 [host-verification-2026-10-16.md](host-verification-2026-10-16.md)）。
+
+`llm`、`sessions`、`sessionController` 因此**不进 inject 列表**，改由 `workflows.js` 的 `service(name)` 在调用时探测（`ctx.get(name, false)`，无该服务时返回 undefined）。可选服务缺失时对应动作返回 503 并在 UI 中禁用，不会降级到自建实现；直接 `ctx.llm` 属性访问在未注入服务上会抛错而非返回 undefined，禁止使用。
 
 ### 3.2 Client inject
 
@@ -346,15 +347,15 @@ review.publish {id,body?,confirmed:true}
 
 ## 10. 测试策略
 
-`npm test` = `node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs`（**77 用例**）**+** `node scripts/test-host.mjs`（**77 passed, 0 failed**）。
+`npm test` = `node --test scripts/test-data.mjs scripts/test-api.mjs scripts/test-workflows.mjs scripts/test-client.mjs`（**84 用例**）**+** `node scripts/test-host.mjs`（**84 passed, 0 failed**）。
 
 | 文件 | 用例 | 覆盖 |
 |------|------|------|
-| `scripts/test-data.mjs` | 13 | gh 字段契约、映射、CI 聚合、分页解析、`githubRequest` 回退规则 |
+| `scripts/test-data.mjs` | 20 | gh 字段契约、映射、CI 聚合、分页解析、`githubRequest` 回退规则 |
 | `scripts/test-api.mjs` | 3 | store 归一化、provider 调度与缓存、filterMrs、鉴权与路由 |
 | `scripts/test-workflows.mjs` | 23 | 确认门、状态机、SHA/配置竞态、`publish_unknown`、持久化与崩溃恢复、宿主 `create/prompt` 契约（含 signal 必填断言） |
 | `scripts/test-client.mjs` | 38 | SPA 渲染与状态机：三态失败、coverage/detailErrors、路由守卫、工作流交互、设置保存 |
-| `scripts/test-host.mjs` | 77 断言 | 真实 node:http + fake cordis ctx 的端到端 op 验证（含 CSP、401/403/405/415、脱敏、discover） |
+| `scripts/test-host.mjs` | 84 断言 | 真实 node:http + fake cordis ctx 的端到端 op 验证（含 CSP、401/403/405/415、脱敏、discover、inject 扁平数组契约） |
 
 测试使用可控 fixture，**不发布真实评论、不调用收费模型**；gh 字段检查用本地无效字段请求验证，不依赖真实登录。`npm run dev` 监听 `127.0.0.1:4173`（`PORT` 可改），使用独立临时配置并在退出时清理，不读取或修改真实 DSH 配置。
 
@@ -362,7 +363,7 @@ review.publish {id,body?,confirmed:true}
 
 ## 11. 部署与排查
 
-安装：`dsh plugin --profile desktop add <path>` → 重启 DSH → 左侧 **CodeHub**。详见 [packaging-and-offline-install.md](packaging-and-offline-install.md)。
+安装：`dsh plugin --profile desktop add <仓库根绝对路径>`（仓库根即包根）→ 重启 DSH → 左侧 **CodeHub**。详见 [packaging-and-offline-install.md](packaging-and-offline-install.md)。交付件归档在 `releases/`，`.tgz` 不入 git。
 
 | 现象 | 排查 |
 |------|------|

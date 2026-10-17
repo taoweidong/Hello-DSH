@@ -13,9 +13,6 @@ jobs:
       fail-fast: false
       matrix:
         node-version: [18, 20, 22]
-    defaults:
-      run:
-        working-directory: dsh-codehub-dashboard
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
