@@ -88,7 +88,7 @@ npm stage publish
 npm stage approve <stage-id>
 ```
 
-批准前该版本不可安装（注册表上只有占位版本）。首次发布的新包同样先 staged、再批准。发布后即可 `dsh plugin --profile <name> add dsh-codehub-dashboard`，无需拷包。
+批准前该版本不可安装（注册表上只有占位版本）。首次发布的新包同样先 staged、再批准。`0.1.3` 已于 2026-10-17 批准并发布（`latest`），之后即可 `dsh plugin --profile <name> add dsh-codehub-dashboard`，无需拷包。npm 安装、校验、升级 / 回滚与发布流程的完整说明见 [npm-package.md](npm-package.md)。
 
 ---
 

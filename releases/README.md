@@ -20,7 +20,7 @@
 | dsh-codehub-dashboard-0.1.0.tgz | 63,874 B | 2026-10-16 14:11 | 布局优化版（设计 token 化重排版），已装入 web profile 实机验证 |
 | dsh-codehub-dashboard-0.1.1.tgz | 68,188 B | 2026-10-17 17:59 | Host 数据契约 + SPA 失败三态 + CI/publish 门禁 + 文档同步；9 文件 / 210.6 kB unpacked |
 | dsh-codehub-dashboard-0.1.2.tgz | 68,505 B | 2026-10-17 20:19 | 复审修复版：P1-1 未知解决状态诚实降级、P1-2 gh 失败态短路缓存、P1-3 保存后去抖刷新、P2-1 kpi sub 转义、P2-5 注释漂移；测试 116+91 |
-| dsh-codehub-dashboard-0.1.3.tgz | 68,883 B | 2026-10-17 21:54 | 首个 npm 发布版：含 `a0b5da7` 的 `resolutionAvailable` 三态修复（未加载评论不再冒充确信的 0）；9 文件 / 218.8 kB unpacked；测试 117+91 |
+| dsh-codehub-dashboard-0.1.3.tgz | 68,883 B | 2026-10-17 21:54 | 首个 npm 发布版：含 `a0b5da7` 的 `resolutionAvailable` 三态修复（未加载评论不再冒充确信的 0）；9 文件 / 218.8 kB unpacked；测试 117+91；2026-10-17 已发布到 npm（`latest`，发布件 68,719 B / LF） |
 
 > 归档包按**当时**的仓库布局打包，只作历史交付凭证。0.1.0 包内 `README.md` 与当前源码不一致，不要直接复用；**0.1.3 为当前最新交付版本**（0.1.2 为上一版）。
 
