@@ -507,11 +507,13 @@ test('config.set answers before the queued refresh finishes', async t => {
 test('concurrent config saves collapse into one queued refresh', async t => {
   const harness = await routeHarness(t)
   let listPulls = 0
+  let blocked = null
   const realFetch = harness.rawFetch
   globalThis.fetch = async (url, options) => {
     if (String(url).startsWith('http://127.0.0.1:')) return realFetch(url, options)
     if (!String(url).includes('/issues')) listPulls++
-    await new Promise((r) => setTimeout(r, 100))
+    if (blocked) await blocked
+    else await new Promise((r) => setTimeout(r, 100))
     return Response.json([])
   }
   t.after(() => { globalThis.fetch = realFetch })
@@ -522,9 +524,17 @@ test('concurrent config saves collapse into one queued refresh', async t => {
   const single = listPulls
   assert.equal(single, 1, 'one save performs exactly one repository-list pull')
 
-  // Four saves in the same tick must not multiply the work.
-  await Promise.all([1, 2, 3, 4].map(() => harness.post('config.set', routeConfig())))
-  await new Promise((r) => setTimeout(r, 900))
+  // Hold the queued refresh open so all four saves are known to have reached
+  // the single-flight helper before it can settle. A wall-clock window made
+  // this flaky under CI load: a slow handler could land after the refresh
+  // finished and legitimately queue a second one (node 20 saw 2 pulls).
+  let release
+  blocked = new Promise((resolve) => { release = resolve })
+  const saves = await Promise.all([1, 2, 3, 4].map(() => harness.post('config.set', routeConfig())))
+  assert.ok(saves.every((saved) => saved.ok), 'all four saves answer without waiting for the refresh')
+  release()
+  blocked = null
+  await new Promise((r) => setTimeout(r, 500))
   assert.equal(listPulls - single, 1, 'four concurrent saves queue one refresh, not four')
 })
 
