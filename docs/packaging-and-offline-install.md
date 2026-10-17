@@ -78,11 +78,17 @@ node -e "console.log(require('./package.json').dsh.bundle)" # 确认 bundle 声�
 
 ### 1.4 发布到 npm（可选，在线场景）
 
+CI 使用 stage-only granular token，只能把版本放进 staging 队列；直接 `npm publish` 会被注册表拒绝（`E_STAGE_REQUIRED`）。发布流程见 `.github/workflows/publish.yml`（tag `v*` 触发，或 `workflow_dispatch` 传 tag 手动触发）：
+
 ```bash
-npm publish --access public
+# CI 内（npm >= 11.15.0）：只 staging，不需要 2FA
+npm stage publish
+
+# 维护者：用 2FA 批准后才真正上线（stage-id 见 CI 日志或 npm stage list）
+npm stage approve <stage-id>
 ```
 
-发布后即可 `dsh plugin --profile <name> add dsh-codehub-dashboard`，无需拷包。
+批准前该版本不可安装（注册表上只有占位版本）。首次发布的新包同样先 staged、再批准。发布后即可 `dsh plugin --profile <name> add dsh-codehub-dashboard`，无需拷包。
 
 ---
 
