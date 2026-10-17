@@ -83,7 +83,7 @@ async function main() {
   console.log('\n📡 Testing /codehub/api endpoints...')
   const boot = await get('/codehub/api?op=boot')
   assert('boot ok', boot.data.ok === true)
-  assert('boot version', boot.data.version === '0.1.2')
+  assert('boot version', boot.data.version === '0.1.3')
   assert('boot has config', !!boot.data.config)
   assert('boot config masked', !boot.data.config.instances?.some?.((i) => i.token && !i.token.startsWith('****')))
 
